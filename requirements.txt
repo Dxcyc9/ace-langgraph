@@ -1,0 +1,9 @@
+# Requirements for ACE LangGraph Implementation
+
+# Core dependencies
+langgraph>=0.0.20
+langchain-openai>=0.0.5
+langchain-core>=0.1.0
+
+# Optional: for visualization
+graphviz>=0.20.0

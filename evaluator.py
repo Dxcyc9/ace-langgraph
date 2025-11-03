@@ -20,9 +20,6 @@ if str(project_root) not in sys.path:
 from ace_langgraph.types import ReactQuestion, ReactAgentResult, EvaluatorResult
 
 
-# 保留旧的 EvaluationResult 作为兼容性别名
-EvaluationResult = EvaluatorResult
-
 
 # LLM 评估提示词
 EVALUATOR_PROMPT = """你是一个严谨的评估专家，负责判断 AI Agent 的答案是否正确。

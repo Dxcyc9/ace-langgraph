@@ -1,0 +1,24 @@
+# 环境变量
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# 数据库
+chroma_db/
+*.db
+*.sqlite3
+
+# 学习的策略（可选择性提交）
+ace_react_playbook.json
+
+# IDE
+.DS_Store
+.vscode/
+.idea/
+
+# 日志
+*.log

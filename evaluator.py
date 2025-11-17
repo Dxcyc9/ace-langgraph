@@ -17,7 +17,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # 统一使用 ace_langgraph 前缀导入
-from ace_langgraph.types import ReactQuestion, ReactAgentResult, EvaluatorResult
+from agent_types import ReactQuestion, ReactAgentResult, EvaluatorResult
 
 
 

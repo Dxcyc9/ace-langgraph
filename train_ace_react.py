@@ -16,8 +16,8 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from ace_langgraph.ace_react_agent import ACEReActWorkflow, get_default_tools
-from ace_langgraph.types import ReactQuestion
+from ace_react_agent import ACEReActWorkflow, get_default_tools
+from agent_types import ReactQuestion
 
 
 def load_train_questions(filepath: str) -> List[ReactQuestion]:

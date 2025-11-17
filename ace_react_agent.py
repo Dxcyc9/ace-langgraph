@@ -19,18 +19,15 @@ from langchain_core.tools import tool
 import sys
 from pathlib import Path
 
-# 添加项目根目录到 Python 路径
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+
 
 # 统一使用 ace_langgraph 前缀导入
-from ace_langgraph.playbook import Playbook
-from ace_langgraph.react_agent import ReActAgent, get_default_tools
-from ace_langgraph.reflector import Reflector
-from ace_langgraph.curator import Curator
-from ace_langgraph.evaluator import Evaluator
-from ace_langgraph.types import (
+from  playbook import Playbook
+from  react_agent import ReActAgent, get_default_tools
+from  reflector import Reflector
+from  curator import Curator
+from  evaluator import Evaluator
+from  agent_types import (
     ReactQuestion, ReactAgentResult, EvaluatorResult,
     ReflectionResult, CuratorResult
 )

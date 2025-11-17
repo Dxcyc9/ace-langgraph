@@ -31,11 +31,11 @@ if str(project_root) not in sys.path:
 try:
     from .playbook import Playbook
     from .prompts import REACT_AGENT_PROMPT_V2
-    from .types import ReactQuestion, ReactAgentResult
+    from .agent_types import ReactQuestion, ReactAgentResult
 except ImportError:
-    from ace_langgraph.playbook import Playbook
-    from ace_langgraph.prompts import REACT_AGENT_PROMPT_V2
-    from ace_langgraph.types import ReactQuestion, ReactAgentResult
+    from playbook import Playbook
+    from prompts import REACT_AGENT_PROMPT_V2
+    from agent_types import ReactQuestion, ReactAgentResult
 
 # ========== 工具定义（使用 @tool 装饰器）==========
 

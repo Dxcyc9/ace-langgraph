@@ -19,9 +19,9 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # 统一使用 ace_langgraph 前缀导入
-from ace_langgraph.playbook import Playbook
-from ace_langgraph.prompts import CURATOR_PROMPT_V2
-from ace_langgraph.types import (
+from   playbook import Playbook
+from   prompts import CURATOR_PROMPT_V2
+from   agent_types import (
     ReactQuestion, ReactAgentResult, EvaluatorResult, 
     ReflectionResult, CuratorResult, DeltaOperation
 )

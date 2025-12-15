@@ -70,7 +70,7 @@ class Curator:
             max_strategies_per_reflection: 每次反思最多提取的策略数
         """
         self.playbook = playbook
-        self.llm = ChatOpenAI(model=model_name, temperature=temperature)
+        self.llm = ChatOpenAI(model=model_name, temperature=temperature, base_url="https://api.moonshot.cn/v1")
         self.model_name = model_name
         self.max_strategies = max_strategies_per_reflection
     
@@ -261,7 +261,7 @@ class Curator:
                 marked_count=marked_count
             )
     
-    def _is_duplicate(self, new_strategy: str, playbook: Playbook, threshold: float = 0.7) -> bool:
+    def _is_duplicate(self, new_strategy: str, playbook: Playbook, threshold: float = 0.90) -> bool:
         """
         检测策略是否重复。
         

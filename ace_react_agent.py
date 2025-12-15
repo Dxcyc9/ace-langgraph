@@ -31,13 +31,84 @@ from  agent_types import (
     ReactQuestion, ReactAgentResult, EvaluatorResult,
     ReflectionResult, CuratorResult
 )
-    
+
 from typing_extensions import TypedDict
 
+# ========== 数据库 Schema 常量（用于训练阶段）==========
+SCHEMA_CONTEXT = """
+## 数据库 Schema (California Schools)
+以下四张表已加载，可直接使用：
+
+### Table: frpm
+```sql
+CREATE TABLE frpm (
+    CDSCode TEXT PRIMARY KEY,
+    "Academic Year" TEXT,
+    "County Name" TEXT,
+    "District Name" TEXT,
+    "School Name" TEXT,
+    "Charter School (Y/N)" INTEGER,
+    "Charter Funding Type" TEXT,
+    "Enrollment (K-12)" REAL,
+    "Free Meal Count (K-12)" REAL,
+    "FRPM Count (K-12)" REAL,
+    "Enrollment (Ages 5-17)" REAL,
+    "Free Meal Count (Ages 5-17)" REAL,
+    "FRPM Count (Ages 5-17)" REAL,
+    "Low Grade" TEXT,
+    "High Grade" TEXT
+);
+### Table: satscores
+CREATE TABLE satscores (
+    cds TEXT PRIMARY KEY,
+    sname TEXT,
+    cname TEXT,
+    NumTstTakr INTEGER,
+    AvgScrRead INTEGER,
+    AvgScrMath INTEGER,
+    AvgScrWrite INTEGER,
+    NumGE1500 INTEGER
+);
+### Table: schools
+CREATE TABLE schools (
+    CDSCode TEXT PRIMARY KEY,
+    County TEXT,
+    District TEXT,
+    School TEXT,
+    Street TEXT,
+    City TEXT,
+    Zip TEXT,
+    Phone TEXT,
+    OpenDate DATE,
+    ClosedDate DATE,
+    Charter INTEGER,
+    CharterNum TEXT,
+    FundingType TEXT,
+    Magnet INTEGER,
+    Virtual TEXT,
+    DOC TEXT,
+    SOC TEXT,
+    AdmFName1 TEXT,
+    AdmLName1 TEXT,
+    AdmEmail1 TEXT
+);
+
+### Table: sqlite_master
+
+create table sqlite_master
+(
+    type     TEXT,
+    name     TEXT,
+    tbl_name TEXT,
+    rootpage INT,
+    sql      TEXT
+);
+注意：不要使用 SELECT *，必须明确列名；字符串用单引号。
+"""
 
 class ACEReActState(TypedDict):
     """ACE + ReAct 工作流状态。
-    
+
     所有数据都以类型对象形式存储，避免冗余字段。
     需要的信息都可以从各个 Result 对象中获取。
     """
@@ -53,7 +124,7 @@ class ACEReActState(TypedDict):
 class ACEReActWorkflow:
     """
     ACE + ReAct 工作流（简化版）。
-    
+
     将简化的 ReAct Agent 集成到 ACE 框架中。
     自动管理 Playbook 持久化（加载/保存）。
     """
@@ -72,7 +143,7 @@ class ACEReActWorkflow:
     ):
         """
         初始化 ACE + ReAct 工作流。
-        
+
         参数：
             tools: ReAct Agent 可用的工具列表
             model_name: LLM 模型名称
@@ -112,7 +183,7 @@ class ACEReActWorkflow:
     def _load_or_create_playbook(self) -> Playbook:
         """
         加载或创建 Playbook。
-        
+
         返回：
             Playbook 实例
         """
@@ -156,7 +227,7 @@ class ACEReActWorkflow:
     def _should_evaluate(self, state: ACEReActState) -> str:
         """
         条件函数：判断是否需要评估。
-        
+
         根据 ground_truth 是否存在决定路由：
         - 有 ground_truth → "evaluate" (训练模式)
         - 无 ground_truth → "skip_evaluate" (生产模式)
@@ -168,7 +239,7 @@ class ACEReActWorkflow:
     def _build_graph(self) -> StateGraph:
         """
         构建 LangGraph 工作流（使用条件边）。
-        
+
         工作流结构：
         - react_agent → 条件判断
           - 有 ground_truth → evaluator → reflector → curator
@@ -204,7 +275,7 @@ class ACEReActWorkflow:
     def _react_agent_node(self, state: ACEReActState) -> ACEReActState:
         """
         ReAct Agent 节点 - 作为 Generator。
-        
+
         使用初始化时创建的 Agent 实例。
         Agent 内部会动态获取最新的 playbook 策略（通过引用）。
         """
@@ -233,7 +304,7 @@ class ACEReActWorkflow:
     def _reflector_node(self, state: ACEReActState) -> ACEReActState:
         """
         反思器节点 - 分析推理过程。
-        
+
         使用 Reflector 模块分析完整的消息历史，找出成功/失败模式。
         支持训练模式（有评估结果）和生产模式（无评估结果）。
         """
@@ -257,7 +328,7 @@ class ACEReActWorkflow:
     def _curator_node(self, state: ACEReActState) -> ACEReActState:
         """
         策展器节点 - 提取新策略。
-        
+
         使用 Curator 模块从反思中提取可复用的策略模式。
         支持训练模式（有评估结果）和生产模式（无评估结果）。
         """
@@ -287,17 +358,17 @@ class ACEReActWorkflow:
     ) -> Dict[str, Any]:
         """
         运行 ACE + ReAct 工作流。
-        
+
         根据是否提供 ground_truth 自动选择训练模式或生产模式：
         - 训练模式（有 ground_truth）：包含评估节点
         - 生产模式（无 ground_truth）：跳过评估节点
-        
+
         使用条件边自动路由，无需手动判断。
-        
+
         参数：
             question: ReactQuestion 对象
             verbose: 是否打印详细信息
-            
+
         返回：包含答案、评估、反思等信息的字典
         """
         # 初始化状态（所有字段都是类型对象）
@@ -375,18 +446,18 @@ class ACEReActWorkflow:
     ) -> ReactAgentResult:
         """
         快速询问模式 - 仅执行 ReAct Agent，不进行评估、反思和学习。
-        
+
         适用场景：
         - 快速获取答案，不需要学习
         - 生产环境直接使用
         - 测试 Agent 性能
-        
+
         参数：
             question: ReactQuestion 对象（可以不提供 ground_truth）
             verbose: 是否打印详细信息
-            
+
         返回：ReactAgentResult 对象
-        
+
         示例：
             >>> workflow = ACEReActWorkflow()
             >>> result = workflow.ask(ReactQuestion("2+2等于多少？"))
@@ -442,7 +513,7 @@ def main():
     # 1. 创建工作流
     workflow = ACEReActWorkflow(
         tools=get_default_tools(),
-        model_name="gpt-4o-mini",
+        model_name="moonshot-v1-8k",
         max_iterations=10,
         use_vector_retrieval=True
     )
@@ -450,20 +521,260 @@ def main():
     # 2. 训练问题
     questions = [
         ReactQuestion(
-            question="计算 (25 + 17) * 3 - 8 的结果，并验证答案是否为偶数",
-            ground_truth="118，是偶数",
-            context=""
+            question="What is the highest eligible free rate for K-12 students in the schools in Alameda County?",
+            ground_truth="SELECT `Free Meal Count (K-12)` / `Enrollment (K-12)` FROM frpm WHERE `County Name` = 'Alameda' ORDER BY (CAST(`Free Meal Count (K-12)` AS REAL) / `Enrollment (K-12)`) DESC LIMIT 1",
+            context=SCHEMA_CONTEXT
         ),
         ReactQuestion(
-            question="搜索 Python 语言的创建者，并说明他创建 Python 的年份",
-            ground_truth="Guido van Rossum，1991年",
-            context=""
+            question="Please list the lowest three eligible free rates for students aged 5-17 in continuation schools.",
+            ground_truth="SELECT `Free Meal Count (Ages 5-17)` / `Enrollment (Ages 5-17)` FROM frpm WHERE `Educational Option Type` = 'Continuation School' AND `Free Meal Count (Ages 5-17)` / `Enrollment (Ages 5-17)` IS NOT NULL ORDER BY `Free Meal Count (Ages 5-17)` / `Enrollment (Ages 5-17)` ASC LIMIT 3",
+            context=SCHEMA_CONTEXT
         ),
         ReactQuestion(
-            question="搜索世界上最高的山峰名称和海拔高度，然后计算如果一个人每天爬升500米，需要多少天才能到达顶峰",
-            ground_truth="珠穆朗玛峰，8849米，需要约18天",
-            context=""
+            question="Please list the zip code of all the charter schools in Fresno County Office of Education.",
+            ground_truth="SELECT T2.Zip FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1.`District Name` = 'Fresno County Office of Education' AND T1.`Charter School (Y/N)` = 1",
+            context=SCHEMA_CONTEXT
         ),
+        ReactQuestion(
+            question="What is the unabbreviated mailing street address of the school with the highest FRPM count for K-12 students?",
+            ground_truth="SELECT T2.MailStreet FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode ORDER BY T1.`FRPM Count (K-12)` DESC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Please list the phone numbers of the direct charter-funded schools that are opened after 2000/1/1.",
+            ground_truth="SELECT T2.Phone FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1.`Charter Funding Type` = 'Directly funded' AND T1.`Charter School (Y/N)` = 1 AND T2.OpenDate > '2000-01-01'",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="How many schools with an average score in Math greater than 400 in the SAT test are exclusively virtual?",
+            ground_truth="SELECT COUNT(DISTINCT T2.School) FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T2.Virtual = 'F' AND T1.AvgScrMath > 400",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Among the schools with the SAT test takers of over 500, please list the schools that are magnet schools or offer a magnet program.",
+            ground_truth="SELECT T2.School FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T2.Magnet = 1 AND T1.NumTstTakr > 500",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the phone number of the school that has the highest number of test takers with an SAT score of over 1500?",
+            ground_truth="SELECT T2.Phone FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode ORDER BY T1.NumGE1500 DESC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the number of SAT test takers of the schools with the highest FRPM count for K-12 students?",
+            ground_truth="SELECT NumTstTakr FROM satscores WHERE cds = ( SELECT CDSCode FROM frpm ORDER BY `FRPM Count (K-12)` DESC LIMIT 1 )",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Among the schools with the average score in Math over 560 in the SAT test, how many schools are directly charter-funded?",
+            ground_truth="SELECT COUNT(T2.`School Code`) FROM satscores AS T1 INNER JOIN frpm AS T2 ON T1.cds = T2.CDSCode WHERE T1.AvgScrMath > 560 AND T2.`Charter Funding Type` = 'Directly funded'",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="For the school with the highest average score in Reading in the SAT test, what is its FRPM count for students aged 5-17?",
+            ground_truth="SELECT T2.`FRPM Count (Ages 5-17)` FROM satscores AS T1 INNER JOIN frpm AS T2 ON T1.cds = T2.CDSCode ORDER BY T1.AvgScrRead DESC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Please list the codes of the schools with a total enrollment of over 500.",
+            ground_truth="SELECT T2.CDSCode FROM schools AS T1 INNER JOIN frpm AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.`Enrollment (K-12)` + T2.`Enrollment (Ages 5-17)` > 500",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Among the schools with an SAT excellence rate of over 0.3, what is the highest eligible free rate for students aged 5-17?",
+            ground_truth="SELECT MAX(CAST(T1.`Free Meal Count (Ages 5-17)` AS REAL) / T1.`Enrollment (Ages 5-17)`) FROM frpm AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds WHERE CAST(T2.NumGE1500 AS REAL) / T2.NumTstTakr > 0.3",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Please list the phone numbers of the schools with the top 3 SAT excellence rate.",
+            ground_truth="SELECT T1.Phone FROM schools AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds ORDER BY CAST(T2.NumGE1500 AS REAL) / T2.NumTstTakr DESC LIMIT 3",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="List the top five schools, by descending order, from the highest to the lowest, the most number of Enrollment (Ages 5-17). Please give their NCES school identification number.",
+            ground_truth="SELECT T1.NCESSchool FROM schools AS T1 INNER JOIN frpm AS T2 ON T1.CDSCode = T2.CDSCode ORDER BY T2.`Enrollment (Ages 5-17)` DESC LIMIT 5",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Which active district has the highest average score in Reading?",
+            ground_truth="SELECT T1.District FROM schools AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds WHERE T1.StatusType = 'Active' ORDER BY T2.AvgScrRead DESC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="How many schools in merged Alameda have number of test takers less than 100?",
+            ground_truth="SELECT COUNT(T1.CDSCode) FROM schools AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds WHERE T1.StatusType = 'Merged' AND T2.NumTstTakr < 100 AND T1.County = 'Lake'",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Rank schools by their average score in Writing where the score is greater than 499, showing their charter numbers.",
+            ground_truth="SELECT CharterNum, AvgScrWrite, RANK() OVER (ORDER BY AvgScrWrite DESC) AS WritingScoreRank FROM schools AS T1  INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds WHERE T2.AvgScrWrite > 499 AND CharterNum is not null",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="How many schools in Fresno (directly funded) have number of test takers not more than 250?",
+            ground_truth="SELECT COUNT(T1.CDSCode) FROM frpm AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds WHERE T1.`Charter Funding Type` = 'Directly funded' AND T1.`County Name` = 'Fresno' AND T2.NumTstTakr <= 250",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the phone number of the school that has the highest average score in Math?",
+            ground_truth="SELECT T1.Phone FROM schools AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds ORDER BY T2.AvgScrMath DESC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="How many schools in Amador which the Low Grade is 9 and the High Grade is 12?",
+            ground_truth="SELECT COUNT(T1.`School Name`) FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.County = 'Amador' AND T1.`Low Grade` = 9 AND T1.`High Grade` = 12",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="In Los Angeles how many schools have more than 500 free meals but less than 700 free or reduced price meals for K-12?",
+            ground_truth="SELECT COUNT(CDSCode) FROM frpm WHERE `County Name` = 'Los Angeles' AND `Free Meal Count (K-12)` > 500 AND `FRPM Count (K-12)`< 700",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Which school in Contra Costa has the highest number of test takers?",
+            ground_truth="SELECT sname FROM satscores WHERE cname = 'Contra Costa' AND sname IS NOT NULL ORDER BY NumTstTakr DESC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="List the names of schools with more than 30 difference in enrollements between K-12 and ages 5-17? Please also give the full street adress of the schools.",
+            ground_truth="SELECT T1.School, T1.Street FROM schools AS T1 INNER JOIN frpm AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.`Enrollment (K-12)` - T2.`Enrollment (Ages 5-17)` > 30",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Give the names of the schools with the percent eligible for free meals in K-12 is more than 0.1 and test takers whose test score is greater than or equal to 1500?",
+            ground_truth="SELECT T2.`School Name` FROM satscores AS T1 INNER JOIN frpm AS T2 ON T1.cds = T2.CDSCode WHERE CAST(T2.`Free Meal Count (K-12)` AS REAL) / T2.`Enrollment (K-12)` > 0.1 AND T1.NumGE1500 > 0",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Name schools in Riverside which the average of average math score for SAT is grater than 400, what is the funding type of these schools?",
+            ground_truth="SELECT T1.sname, T2.`Charter Funding Type` FROM satscores AS T1 INNER JOIN frpm AS T2 ON T1.cds = T2.CDSCode WHERE T2.`District Name` LIKE 'Riverside%' GROUP BY T1.sname, T2.`Charter Funding Type` HAVING CAST(SUM(T1.AvgScrMath) AS REAL) / COUNT(T1.cds) > 400",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="State the names and full communication address of high schools in Monterey which has more than 800 free or reduced price meals for ages 15-17?",
+            ground_truth="SELECT T1.`School Name`, T2.Street, T2.City, T2.State, T2.Zip FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.County = 'Monterey' AND T1.`Free Meal Count (Ages 5-17)` > 800 AND T1.`School Type` = 'High Schools (Public)'",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the average score in writing for the schools that were opened after 1991 or closed before 2000? List the school names along with the score. Also, list the communication number of the schools if there is any.",
+            ground_truth="SELECT T2.School, T1.AvgScrWrite, T2.Phone FROM schools AS T2 LEFT JOIN satscores AS T1 ON T2.CDSCode = T1.cds WHERE strftime('%Y', T2.OpenDate) > '1991' OR strftime('%Y', T2.ClosedDate) < '2000'",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Consider the average difference between K-12 enrollment and 15-17 enrollment of schools that are locally funded, list the names and DOC type of schools which has a difference above this average.",
+            ground_truth="SELECT T2.School, T2.DOC FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.FundingType = 'Locally funded' AND (T1.`Enrollment (K-12)` - T1.`Enrollment (Ages 5-17)`) > (SELECT AVG(T3.`Enrollment (K-12)` - T3.`Enrollment (Ages 5-17)`) FROM frpm AS T3 INNER JOIN schools AS T4 ON T3.CDSCode = T4.CDSCode WHERE T4.FundingType = 'Locally funded')",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="When did the first-through-twelfth-grade school with the largest enrollment open?",
+            ground_truth="SELECT T2.OpenDate FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode ORDER BY T1.`Enrollment (K-12)` DESC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Which cities have the top 5 lowest enrollment number for students in grades 1 through 12?",
+            ground_truth="SELECT T2.City FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode GROUP BY T2.City ORDER BY SUM(T1.`Enrollment (K-12)`) ASC LIMIT 5",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the eligible free rate of the 10th and 11th schools with the highest enrolment for students in grades 1 through 12?",
+            ground_truth="SELECT CAST(`Free Meal Count (K-12)` AS REAL) / `Enrollment (K-12)` FROM frpm ORDER BY `Enrollment (K-12)` DESC LIMIT 9, 2",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the eligible free or reduced price meal rate for the top 5 schools in grades 1-12 with the highest free or reduced price meal count of the schools with the ownership code 66?",
+            ground_truth="SELECT CAST(T1.`FRPM Count (K-12)` AS REAL) / T1.`Enrollment (K-12)` FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.SOC = 66 ORDER BY T1.`FRPM Count (K-12)` DESC LIMIT 5",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="If there are any, what are the websites address of the schools with a free meal count of 1,900-2,000 to students aged 5-17? Include the name of the school.",
+            ground_truth="SELECT T2.Website, T1.`School Name` FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1.`Free Meal Count (Ages 5-17)` BETWEEN 1900 AND 2000 AND T2.Website IS NOT NULL",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the free rate for students between the ages of 5 and 17 at the school run by Kacey Gibson?",
+            ground_truth="SELECT CAST(T2.`Free Meal Count (Ages 5-17)` AS REAL) / T2.`Enrollment (Ages 5-17)` FROM schools AS T1 INNER JOIN frpm AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1.AdmFName1 = 'Kacey' AND T1.AdmLName1 = 'Gibson'",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the administrator's email address of the chartered school with the fewest students enrolled in grades 1 through 12?",
+            ground_truth="SELECT T2.AdmEmail1 FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1.`Charter School (Y/N)` = 1 ORDER BY T1.`Enrollment (K-12)` ASC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Under whose administration is the school with the highest number of students scoring 1500 or more on the SAT? Indicate their full names.",
+            ground_truth="SELECT T2.AdmFName1, T2.AdmLName1, T2.AdmFName2, T2.AdmLName2, T2.AdmFName3, T2.AdmLName3 FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode ORDER BY T1.NumGE1500 DESC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the complete address of the school with the lowest excellence rate? Indicate the Street, City, Zip and State.",
+            ground_truth="SELECT T2.Street, T2.City, T2.State, T2.Zip FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode ORDER BY CAST(T1.NumGE1500 AS REAL) / T1.NumTstTakr ASC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What are the webpages for the Los Angeles County school that has between 2,000 and 3,000 test takers?",
+            ground_truth="SELECT T2.Website FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T1.NumTstTakr BETWEEN 2000 AND 3000 AND T2.County = 'Los Angeles'",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the average number of test takers from Fresno schools that opened between 1/1/1980 and 12/31/1980?",
+            ground_truth="SELECT AVG(T1.NumTstTakr) FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE strftime('%Y', T2.OpenDate) = '1980' AND T2.County = 'Fresno'",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the telephone number for the school with the lowest average score in reading in Fresno Unified?",
+            ground_truth="SELECT T2.Phone FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T2.District = 'Fresno Unified' AND T1.AvgScrRead IS NOT NULL ORDER BY T1.AvgScrRead ASC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="List the names of virtual schools that are among the top 5 in their respective counties based on average reading scores.",
+            ground_truth="SELECT School FROM (SELECT T2.School,T1.AvgScrRead, RANK() OVER (PARTITION BY T2.County ORDER BY T1.AvgScrRead DESC) AS rnk FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T2.Virtual = 'F' ) ranked_schools WHERE rnk <= 5",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the type of education offered in the school who scored the highest average in Math?",
+            ground_truth="SELECT T2.EdOpsName FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode ORDER BY T1.AvgScrMath DESC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the average math score of the school with the lowest average score for all subjects, and in which county is it located?",
+            ground_truth="SELECT T1.AvgScrMath, T2.County FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T1.AvgScrMath IS NOT NULL ORDER BY T1.AvgScrMath + T1.AvgScrRead + T1.AvgScrWrite ASC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the average writing score of the school who has the highest number of test takers whose total SAT sscores are greater or equal to 1500? Indicate the city to where the school is situated.",
+            ground_truth="SELECT T1.AvgScrWrite, T2.City FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode ORDER BY T1.NumGE1500 DESC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the average writing score of each of the schools managed by Ricci Ulrich? List the schools and the corresponding average writing scores.",
+            ground_truth="SELECT T2.School, T1.AvgScrWrite FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T2.AdmFName1 = 'Ricci' AND T2.AdmLName1 = 'Ulrich'",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Which state special schools have the highest number of enrollees from grades 1 through 12?",
+            ground_truth="SELECT T2.School FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.DOC = 31 ORDER BY T1.`Enrollment (K-12)` DESC LIMIT 1",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the monthly average number of schools that opened in Alameda County under the jurisdiction of the Elementary School District in 1980?",
+            ground_truth="SELECT CAST(COUNT(School) AS REAL) / 12 FROM schools WHERE DOC = 52 AND County = 'Alameda' AND strftime('%Y', OpenDate) = '1980'",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the ratio of merged Unified School District schools in Orange County to merged Elementary School District schools?",
+            ground_truth="SELECT CAST(SUM(CASE WHEN DOC = 54 THEN 1 ELSE 0 END) AS REAL) / SUM(CASE WHEN DOC = 52 THEN 1 ELSE 0 END) FROM schools WHERE StatusType = 'Merged' AND County = 'Orange'",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="Which different county has the most number of closed schools? Please provide the name of each school as well as the closure date.",
+            ground_truth="SELECT DISTINCT County, School, ClosedDate FROM schools WHERE County = ( SELECT County FROM schools WHERE StatusType = 'Closed' GROUP BY County ORDER BY COUNT(School) DESC LIMIT 1 ) AND StatusType = 'Closed' AND school IS NOT NULL",
+            context=SCHEMA_CONTEXT
+        ),
+        ReactQuestion(
+            question="What is the postal street address for the school with the 7th highest Math average? Indicate the school's name.",
+            ground_truth="SELECT T2.MailStreet, T2.School FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode ORDER BY T1.AvgScrMath DESC LIMIT 6, 1",
+            context=SCHEMA_CONTEXT
+        )
     ]
     
     # 3. 运行训练
@@ -502,18 +813,15 @@ def main():
     print("="*60 + "\n")
     
     test_question = ReactQuestion(
-        question="搜索世界上最深的海沟名称和深度，然后计算如果一个潜水器每小时下潜1000米，需要多少小时才能到达海沟最深处。最后验证计算结果是否为整数小时数。",
-        context=""
+        question="What is the total number of non-chartered schools in the county of Los Angeles with a percent (%) of eligible free meals for grades 1 through 12 that is less than 0.18%?",
+        context=SCHEMA_CONTEXT,
+        ground_truth="SELECT COUNT(T2.School) FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.County = 'Los Angeles' AND T2.Charter = 0 AND CAST(T1.`Free Meal Count (K-12)` AS REAL) * 100 / T1.`Enrollment (K-12)` < 0.18"
     )
     print(f"问题：{test_question.question}")
-    print("模式：综合测试（搜索 + 计算 + 验证）\n")
+
     
     result = workflow.run(test_question, verbose=True)
-    
-    print("\n💡 此问题测试了训练中学到的多个能力：")
-    print("   ✓ 信息搜索能力")
-    print("   ✓ 多步计算能力")
-    print("   ✓ 数值验证能力")
+    # print("result:", result)
     # 从 curator_result 获取新策略数量
     curator_result = result.get('curator_result')
     new_strategies_count = curator_result.added_count if curator_result else 0

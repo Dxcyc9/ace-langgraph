@@ -44,7 +44,7 @@ class Reflector:
             temperature: 温度参数（较高的温度产生更多样化的分析）
         """
         self.playbook = playbook
-        self.llm = ChatOpenAI(model=model_name, temperature=temperature)
+        self.llm = ChatOpenAI(model=model_name, temperature=temperature, base_url="https://api.moonshot.cn/v1")
         self.model_name = model_name
     
     def reflect(

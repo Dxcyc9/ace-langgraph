@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import json
 
+
 # 可选的向量检索依赖
 import chromadb
 from chromadb.config import Settings
 from langchain_openai import OpenAIEmbeddings
-
+from langchain_huggingface import HuggingFaceEmbeddings
 @dataclass
 class Strategy:
     """单个学习到的策略。"""
@@ -104,7 +105,7 @@ class Playbook:
         enable_retrieval: bool = False,
         collection_name: str = "ace_strategies",
         persist_directory: str = "./chroma_db",
-        embedding_model: str = "text-embedding-3-small"
+        embedding_model: str = "doubao-embedding"
     ):
         """
         初始化 Playbook。
@@ -144,8 +145,13 @@ class Playbook:
             path=self.persist_directory,
             settings=Settings(anonymized_telemetry=False)
         )
-        
-        self.embeddings = OpenAIEmbeddings(model=self.embedding_model)
+
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name=r"G:\code\ace-langgraph\models\BAAI\bge-small-zh",  # 2. 本地绝对路径
+            model_kwargs={"device": "cpu"},  # 3. 官方传参方式
+            encode_kwargs={"normalize_embeddings": True}
+        )
+
         
         self.collection = self.chroma_client.get_or_create_collection(
             name=self.collection_name,

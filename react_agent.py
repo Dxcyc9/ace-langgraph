@@ -13,6 +13,7 @@ from datetime import datetime
 from langchain.tools import tool
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage
+from langchain_openai import ChatOpenAI
 
 import sys
 import os
@@ -30,11 +31,11 @@ if str(project_root) not in sys.path:
 # 支持两种导入方式
 try:
     from .playbook import Playbook
-    from .prompts import REACT_AGENT_PROMPT_V2
+    from .prompts import REACT_AGENT_PROMPT_V3
     from .agent_types import ReactQuestion, ReactAgentResult
 except ImportError:
     from playbook import Playbook
-    from prompts import REACT_AGENT_PROMPT_V2
+    from prompts import REACT_AGENT_PROMPT_V3
     from agent_types import ReactQuestion, ReactAgentResult
 
 # ========== 工具定义（使用 @tool 装饰器）==========
@@ -110,6 +111,61 @@ def search(query: str) -> str:
     except Exception as e:
         return f"搜索错误：{str(e)}"
 
+@tool
+def sqlite_schema(db_path: str, sample_rows: int = 3) -> str:
+    """
+    读取 SQLite 文件，返回文本化的 schema 和少量样例数据，供大模型生成 SQL 使用。
+    参数：
+        db_path:      本地 *.sqlite 文件绝对路径
+        sample_rows:  每张表抽样行数（默认 3 行，0 表示不抽样）
+    返回：
+        字符串，包含：
+        1) CREATE TABLE 语句（含主键/外键）
+        2) 每表最多 sample_rows 行 INSERT 风格示例（CSV 格式，仅字符串/数字）
+    """
+    import sqlite3, csv, io, textwrap
+
+    if not os.path.isfile(db_path):
+        return f"文件不存在：{db_path}"
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.text_factory = str
+        cur = conn.cursor()
+
+        tables = [t[0] for t in cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+        if not tables:
+            return "数据库中无用户表。"
+
+        buf = io.StringIO()
+        # 1) 输出 schema
+        for tbl in tables:
+            buf.write(f"-- Table: {tbl}\n")
+            create_sql = cur.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (tbl,)).fetchone()[0]
+            buf.write(create_sql + ";\n\n")
+
+            # 2) 抽样数据
+            if sample_rows > 0:
+                rows = cur.execute(f"SELECT * FROM `{tbl}` LIMIT ?", (sample_rows,)).fetchall()
+                if not rows:
+                    buf.write("-- (empty)\n\n")
+                    continue
+                # 转 CSV 风格，避免值里有换行
+                buf.write("-- Sample data (CSV format):\n")
+                output = io.StringIO()
+                writer = csv.writer(output, delimiter=',', quotechar='"', quoting=csv.MINIMAL)
+                writer.writerow([d[0] for d in cur.description])  # header
+                writer.writerows(rows)
+                buf.write(output.getvalue() + "\n")
+
+        conn.close()
+        return buf.getvalue()
+
+    except Exception as e:
+        return f"读取 sqlite 失败：{str(e)}"
+
 # ========== ReAct Agent ==========
 
 class ReActAgent:
@@ -174,49 +230,124 @@ class ReActAgent:
             question: 当前问题
             context: 额外的上下文信息
         """
-        # 每次都重新创建 agent，以便使用最新的策略和反思
-        return create_agent(
-            model=f"openai:{self.model_name}",
-            tools=self.tools,
-            system_prompt=self._get_system_prompt(question, context)
+        from langgraph.prebuilt import create_react_agent
+        from langchain_openai import ChatOpenAI
+        from langchain_core.prompts import ChatPromptTemplate
+
+        # 1. 组装系统提示
+        system = self._get_system_prompt(question, context)
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system),
+            ("placeholder", "{messages}")  # 运行时把用户消息塞到这里
+        ])
+
+        # 2. 创建模型
+        llm = ChatOpenAI(
+            model=self.model_name,
+            base_url="https://api.moonshot.cn/v1",
+            api_key=os.getenv("OPENAI_API_KEY"),
+            temperature=0
         )
-    
+
+        # 3. 返回编译好的 LangGraph
+        return create_react_agent(
+            model=llm,
+            tools=self.tools,
+            prompt=prompt,  # ← 用 prompt 而不是 messages
+            version="v2"  # 支持并行工具
+        )
+        # return create_agent(
+        #     model=f"openai:{self.model_name}",
+        #     tools=self.tools,
+        #     system_prompt=self._get_system_prompt(question, context)
+        # )
+
+
+        # return create_react_agent(
+        #     model=f"openai:{self.model_name}",
+        #     tools=self.tools,
+        #     prompt=self._get_system_prompt(question, context),  # 注意：prompt 不是 system_prompt
+        #     max_iterations=self.max_iterations  # 关键：限制循环次数
+        # )
+
+
     def run(
-        self, 
+        self,
         react_question: ReactQuestion,
         track_strategies: bool = True
     ) -> ReactAgentResult:
         """
         运行 ReAct Agent 解决问题。
-        
+
         参数：
             react_question: 输入问题（ReactQuestion 对象）
             track_strategies: 是否追踪使用的策略
-            
+
         返回：
             ReactAgentResult 对象
         """
         question = react_question.question
         context = react_question.context
-        
+
         # 保存当前问题（用于检索策略）
         self.current_question = question
-        
+
         # 动态创建 agent（使用当前问题检索相关策略）
         agent = self._get_or_create_agent(question, context)
-        
+
         if self.verbose:
             print(f"\n{'='*60}")
             print(f"问题：{question}")
             if context:
                 print(f"上下文：{context}")
             print(f"{'='*60}\n")
-        
+
         # 调用 agent
         result = agent.invoke({
             "messages": [{"role": "user", "content": question}]
         })
-        
+        messages = result["messages"]
+        final_message = messages[-1].content if messages else ""
+
+        # === 解析策略行（与可选提示词兼容） ===
+        used_strategies = []
+        lines = final_message.strip().split('\n')
+
+        # 检查第一行是否是策略引用
+        if lines and "Strategy:" in lines[0]:
+            # 提取策略ID
+            import re
+            matches = re.findall(r'Strategy: \[([a-z]{3}-\d{5})\]', lines[0])
+            used_strategies = matches
+
+            # SQL 内容从第二行开始
+            sql_lines = lines[1:] if len(lines) > 1 else []
+            final_answer = '\n'.join(sql_lines).strip()
+
+            # 仅在策略引用格式错误时警告（不是缺失）
+            if not matches and track_strategies:
+                print("⚠️ 策略引用格式错误，应为: Strategy: [sql-xxxxx]")
+        else:
+            # Agent 未引用策略（符合新的可选规则）
+            final_answer = final_message.strip()
+
+            # 仅在 Playbook 非空时提示（可关闭）
+            if track_strategies and len(self.playbook) > 0:
+                print("ℹ️ Agent 未使用策略（直接生成SQL）")
+
+
+        # === 调试：看所有 AI 消息的 tool_calls ===
+        for idx, m in enumerate(result["messages"]):
+            if hasattr(m, "type") and m.type == "ai":
+                calls = getattr(m, "tool_calls", None)
+                if calls:
+                    print(f"【步骤 {idx} 调用了工具】", calls)
+                    break  # 找到第一个就停
+        else:
+            print("【全程未调用任何工具】")
+
+        # ==========================================
+        # print("原始消息:", result["messages"][-1])
         # 提取答案和推理过程
         messages = result["messages"]
         final_message = messages[-1].content if messages else "未能生成答案"
@@ -225,23 +356,23 @@ class ReActAgent:
             final_answer = final_message.split("Final Answer:")[-1].strip()
         else:
             final_answer = final_message
-        
+
         # 提取完整推理过程（所有 AI 消息的拼接）
         # 提取推理过程：遍历所有AI消息，构建编号的推理步骤
         reasoning_steps = []
         step_num = 1
-        
+
         for msg in messages:
             if isinstance(msg, AIMessage) and hasattr(msg, 'content'):
                 reasoning_steps.append(f"\n{msg.content.strip()}")
                 step_num += 1
         reasoning = "\n\n".join(reasoning_steps) if reasoning_steps else "未生成推理过程"
-        
+
         # 追踪使用的策略
         used_strategies = []
         if track_strategies:
             used_strategies = self._extract_used_strategies(messages)
-        
+
         if self.verbose:
             print(f"\n【最终答案】\n{final_answer}")
             print(f"\n【推理过程】\n{reasoning}")
@@ -249,15 +380,119 @@ class ReActAgent:
                 print(f"\n【使用的策略】\n{', '.join(used_strategies)}")
             print(f"\n【迭代次数】\n{len([m for m in messages if hasattr(m, 'tool_calls') and m.tool_calls])}")
             print()
-        
+
         return ReactAgentResult(
             answer=final_answer,
-            reasoning=reasoning,
+            reasoning=final_message,
             used_strategies=used_strategies,
             iterations=len([m for m in messages if hasattr(m, 'tool_calls') and m.tool_calls]),
             messages=messages,
             success=True
         )
+
+    # def run(self, react_question: ReactQuestion, track_strategies: bool = True) -> ReactAgentResult:
+    #     question = react_question.question
+    #     context = react_question.context
+    #     self.current_question = question
+    #
+    #     # 1. 先让模型生成 ReAct 文本（不自动执行工具）
+    #     llm = ChatOpenAI(
+    #         model=self.model_name,
+    #         base_url="https://api.moonshot.cn/v1",
+    #         api_key=os.getenv("OPENAI_API_KEY"),
+    #         temperature=0
+    #     )
+    #
+    #     # 2. 循环直到拿到 Final Answer
+    #     messages = [{"role": "user", "content": question}]
+    #     max_steps = self.max_iterations
+    #     steps_taken = 0
+    #     full_history = []
+    #
+    #     for step in range(max_steps):
+    #         # 调用 LLM
+    #         response = llm.invoke(messages)
+    #         content = response.content
+    #         full_history.append(f"Step {step}: {content}")
+    #
+    #         # ===== 实时输出推理过程 =====
+    #         if self.verbose:
+    #             print(f"\n{'=' * 60}")
+    #             print(f"【Step {step} - 推理/Action】")
+    #             print(f"{'=' * 60}")
+    #             print(content)
+    #
+    #         # 3. 手动解析 Action
+    #         if "Action:" in content and "Action Input:" in content:
+    #             # 提取工具名和参数
+    #             action_match = re.search(r'Action:\s*(\w+)', content)
+    #             input_match = re.search(r'Action Input:\s*(.+)', content)
+    #
+    #             if action_match and input_match:
+    #                 tool_name = action_match.group(1)
+    #                 tool_input = input_match.group(1).strip()
+    #
+    #                 # 4. 执行真实工具
+    #                 tool_result = self._execute_tool(tool_name, tool_input)
+    #
+    #                 # 5. 把结果包装成 Observation 追加到历史
+    #                 observation = f"Observation: {tool_result}"
+    #                 full_history.append(observation)
+    #                 messages.append({"role": "user", "content": observation})
+    #                 steps_taken += 1
+    #
+    #                 # ===== 实时输出工具执行结果 =====
+    #                 if self.verbose:
+    #                     print(f"\n【Tool 执行】")
+    #                     print(f"工具: {tool_name}")
+    #                     print(f"输入: {tool_input}")
+    #                     print(f"结果:\n{tool_result}")
+    #
+    #                 continue
+    #
+    #         # 6. 检测到 Final Answer 就跳出
+    #         if "Final Answer:" in content:
+    #             if self.verbose:
+    #                 print("\n【检测到 Final Answer，停止迭代】")
+    #             break
+    #
+    #     # 7. 提取最终答案
+    #     final_answer = content.split("Final Answer:")[-1].strip() if "Final Answer:" in content else content
+    #
+    #     # ===== 实时输出最终答案 =====
+    #     if self.verbose:
+    #         print(f"\n{'=' * 60}")
+    #         print("【最终答案】")
+    #         print(f"{'=' * 60}")
+    #         print(final_answer)
+    #         print(f"{'=' * 60}\n")
+    #     # 8. 追踪策略
+    #     used_strategies = self._extract_used_strategies(full_history) if track_strategies else []
+    #
+    #     return ReactAgentResult(
+    #         answer=final_answer,
+    #         reasoning="\n\n".join(full_history),
+    #         used_strategies=used_strategies,
+    #         iterations=steps_taken,
+    #         messages=messages,
+    #         success=True
+    #     )
+    #
+    # def _execute_tool(self, tool_name: str, tool_input: str) -> str:
+    #     """手动执行工具"""
+    #     for tool in self.tools:
+    #         if tool.name == tool_name:
+    #             try:
+    #                 # 尝试解析 JSON 输入，如果是纯文本就原样传
+    #                 import json
+    #                 try:
+    #                     parsed_input = json.loads(tool_input)
+    #                     return tool.invoke(parsed_input)
+    #                 except:
+    #                     return tool.invoke(tool_input)
+    #             except Exception as e:
+    #                 return f"工具执行错误: {str(e)}"
+    #     return f"未找到工具: {tool_name}"
     
     def _get_system_prompt(self, question: str = "", context: str = "") -> str:
         """
@@ -268,15 +503,21 @@ class ReActAgent:
             context: 额外的上下文信息（包含在系统提示词中）
         """
         playbook_str = self._format_playbook(question)
-        
-        # 格式化 context（如果有）
+
+
+
+        # 2. 格式化 context（如果有）
         context_str = f"\n## 额外上下文\n\n{context}" if context else ""
-        
-        prompt = REACT_AGENT_PROMPT_V2.format(
+        # 3. 如果 context 中已包含 schema，提示模型直接使用
+        schema_hint = ""
+        if "CREATE TABLE" in (context or ""):
+            schema_hint = "\n\n## 数据库查询说明\n上下文中已提供数据库 Schema，请直接生成 SQL，不要调用任何工具。"
+        # 4. 组装最终系统提示（原模板 + SQL 规范）
+        prompt = REACT_AGENT_PROMPT_V3.format(
             playbook=playbook_str,
             context=context_str
-        )
-        
+        ) + schema_hint
+
         return prompt
     
     def _format_playbook(self, question: str = "") -> str:
@@ -290,6 +531,7 @@ class ReActAgent:
         参数：
             question: 当前问题（用于向量检索）
         """
+
         if not len(self.playbook):
             return "（Playbook 为空，尚无学习策略）"
         
@@ -299,7 +541,8 @@ class ReActAgent:
             top_k=self.top_k_strategies,
             min_score=0   
         )
-        
+        if not strategies:
+            return "（⚠️ Playbook 中暂无可用策略，但你仍需检查是否有相关策略可引用）"
         if self.verbose:
             # 检测实际使用的检索方式（由 Playbook 决定）
             retrieval_method = "🔍 向量检索" if (self.playbook.enable_retrieval and question) else "📊 分数排序"
@@ -341,7 +584,7 @@ class ReActAgent:
 
 def get_default_tools() -> List:
     """获取默认工具集。"""
-    return [calculator, search]
+    return [calculator, search, sqlite_schema]
 
 
 # ========== 演示代码 ==========

@@ -102,7 +102,7 @@ class Evaluator:
         self.temperature = temperature
         self.llm = ChatOpenAI(
             model=model_name,
-            temperature=temperature
+            temperature=temperature, base_url="https://api.moonshot.cn/v1"
         )
     
     def evaluate(

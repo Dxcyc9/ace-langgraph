@@ -38,6 +38,43 @@ except ImportError:
     from prompts import REACT_AGENT_PROMPT_V3
     from agent_types import ReactQuestion, ReactAgentResult
 
+# ... existing code ...
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+# 路径解析助手：统一解析相对/绝对/容器路径
+def _resolve_db_path(db_path: str) -> str:
+    import os
+    raw = db_path or os.getenv("SQLITE_DB_PATH") or "data/sqlite/california_schools.sqlite"
+    # 已是绝对路径且存在
+    if os.path.isabs(raw) and os.path.isfile(raw):
+        print(f"[db_resolve] 使用绝对路径: {raw}")
+        return raw
+    # 1) 项目根目录 + 相对路径
+    candidate1 = os.path.join(str(project_root), raw)
+    if os.path.isfile(candidate1):
+        print(f"[db_resolve] 解析为项目内路径: {candidate1}")
+        return candidate1
+    # 2) 兼容 '/data/...' 容器挂载：去掉前导斜杠再拼项目根
+    candidate2 = os.path.join(str(project_root), raw.lstrip('/'))
+    if os.path.isfile(candidate2):
+        print(f"[db_resolve] 兼容容器路径: {candidate2}")
+        return candidate2
+    # 3) 环境变量显式指定
+    env_path = os.getenv("SQLITE_DB_PATH")
+    if env_path and os.path.isfile(env_path):
+        print(f"[db_resolve] 使用环境变量 SQLITE_DB_PATH: {env_path}")
+        return env_path
+    # 4) 最终回退到项目默认
+    fallback = os.path.join(str(project_root), "data/sqlite/california_schools.sqlite")
+    if os.path.isfile(fallback):
+        print(f"[db_resolve] 使用默认路径: {fallback}")
+        return fallback
+    print(f"[db_resolve] 未找到数据库文件（raw={raw}）")
+    return raw
+# ... existing code ...
+
 # ========== 工具定义（使用 @tool 装饰器）==========
 
 @tool
@@ -112,7 +149,7 @@ def search(query: str) -> str:
         return f"搜索错误：{str(e)}"
 
 @tool
-def sqlite_schema(db_path: str, sample_rows: int = 3) -> str:
+def sqlite_schema(db_path: str = "data/sqlite/california_schools.sqlite", sample_rows: int = 3) -> str:
     """
     读取 SQLite 文件，返回文本化的 schema 和少量样例数据，供大模型生成 SQL 使用。
     参数：
@@ -123,48 +160,168 @@ def sqlite_schema(db_path: str, sample_rows: int = 3) -> str:
         1) CREATE TABLE 语句（含主键/外键）
         2) 每表最多 sample_rows 行 INSERT 风格示例（CSV 格式，仅字符串/数字）
     """
-    import sqlite3, csv, io, textwrap
+    import sqlite3, csv, io, textwrap, time
 
-    if not os.path.isfile(db_path):
-        return f"文件不存在：{db_path}"
+    print(f"[sqlite_schema] 开始读取 schema, db_path={db_path}, sample_rows={sample_rows}")
+    start_ts = time.time()
+
+    resolved = _resolve_db_path(db_path)
+    if not os.path.isfile(resolved):
+        print(f"[sqlite_schema] 文件不存在: {resolved}")
+        return f"文件不存在：{resolved}"
 
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{resolved}?mode=ro", uri=True)
         conn.text_factory = str
         cur = conn.cursor()
+        print("[sqlite_schema] 已连接数据库（只读）")
 
         tables = [t[0] for t in cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'" ).fetchall()]
+        print(f"[sqlite_schema] 发现 {len(tables)} 张表: {', '.join(tables) if tables else '(无)'}")
         if not tables:
+            print("[sqlite_schema] 数据库中无用户表")
             return "数据库中无用户表。"
 
         buf = io.StringIO()
         # 1) 输出 schema
         for tbl in tables:
+            print(f"[sqlite_schema] 读取表结构: {tbl}")
             buf.write(f"-- Table: {tbl}\n")
-            create_sql = cur.execute(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (tbl,)).fetchone()[0]
+            row = cur.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (tbl,) ).fetchone()
+            create_sql = row[0] if row else ""
             buf.write(create_sql + ";\n\n")
 
             # 2) 抽样数据
             if sample_rows > 0:
-                rows = cur.execute(f"SELECT * FROM `{tbl}` LIMIT ?", (sample_rows,)).fetchall()
+                print(f"[sqlite_schema] 抽样数据: {tbl}, rows={sample_rows}")
+                rows = cur.execute(f"SELECT * FROM `{tbl}` LIMIT ?", (sample_rows,) ).fetchall()
                 if not rows:
+                    print(f"[sqlite_schema] {tbl} 无样例数据")
                     buf.write("-- (empty)\n\n")
                     continue
                 # 转 CSV 风格，避免值里有换行
                 buf.write("-- Sample data (CSV format):\n")
                 output = io.StringIO()
-                writer = csv.writer(output, delimiter=',', quotechar='"', quoting=csv.MINIMAL)
+                writer = csv.writer(output, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
                 writer.writerow([d[0] for d in cur.description])  # header
                 writer.writerows(rows)
                 buf.write(output.getvalue() + "\n")
 
         conn.close()
+        dur_ms = int((time.time() - start_ts) * 1000)
+        print(f"[sqlite_schema] 完成，耗时 {dur_ms} ms")
         return buf.getvalue()
 
     except Exception as e:
+        print(f"[sqlite_schema] 读取失败: {str(e)}")
         return f"读取 sqlite 失败：{str(e)}"
+
+# ... existing code ...
+@tool
+def sqlite_query(db_path: str = "data/sqlite/california_schools.sqlite", sql: str = "", limit: int = 50) -> str:
+    """
+    只读执行 SQL 并返回结果预览或错误信息。
+    - 仅允许 SELECT/WITH/EXPLAIN 语句
+    - 返回 JSON：{"headers": [...], "rows": [...], "row_count": N}
+    """
+    import sqlite3, json, os, time
+    start_ts = time.time()
+    print(f"[sqlite_query] 开始: db_path={db_path}, limit={limit}")
+    sql_text = (sql or "").strip()
+    print(f"[sqlite_query] SQL: {sql_text}")
+    if not sql_text:
+        print("[sqlite_query] SQL为空")
+        return "SQL为空"
+    head = sql_text.split()[0].upper()
+    if head not in {"SELECT", "WITH", "EXPLAIN"}:
+        print(f"[sqlite_query] 非只读语句: {head}")
+        return "仅支持只读查询（SELECT/WITH/EXPLAIN）"
+    resolved = _resolve_db_path(db_path)
+    if not os.path.isfile(resolved):
+        print(f"[sqlite_query] 文件不存在: {resolved}")
+        return f"文件不存在：{resolved}"
+    try:
+        print("[sqlite_query] 连接数据库（只读）")
+        conn = sqlite3.connect(f"file:{resolved}?mode=ro", uri=True)
+        cur = conn.cursor()
+        print("[sqlite_query] 执行查询...")
+        cur.execute(sql_text)
+        rows = cur.fetchmany(limit)
+        headers = [d[0] for d in cur.description] if cur.description else []
+        total = None
+        try:
+            if head != "EXPLAIN":
+                total = len(rows)
+        except Exception:
+            total = None
+        conn.close()
+        dur_ms = int((time.time() - start_ts) * 1000)
+        print(f"[sqlite_query] 完成: rows={total}, headers={headers}, 耗时{dur_ms}ms")
+        return json.dumps({"headers": headers, "rows": rows, "row_count": total}, ensure_ascii=False)
+    except Exception as e:
+        print(f"[sqlite_query] 失败: {str(e)}")
+        return f"SQL执行错误：{str(e)}"
+
+@tool
+def sqlite_columns(db_path: str = "data/sqlite/california_schools.sqlite", table: str = "") -> str:
+    """
+    返回指定表的列名与类型（PRAGMA table_info）。
+    """
+    import sqlite3, json, os
+    print(f"[sqlite_columns] 开始: db_path={db_path}, table={table}")
+    if not table:
+        print("[sqlite_columns] 未指定表名")
+        return "未指定表名"
+    resolved = _resolve_db_path(db_path)
+    if not os.path.isfile(resolved):
+        print(f"[sqlite_columns] 文件不存在: {resolved}")
+        return f"文件不存在：{resolved}"
+    try:
+        print("[sqlite_columns] 连接数据库（只读）")
+        conn = sqlite3.connect(f"file:{resolved}?mode=ro", uri=True)
+        cur = conn.cursor()
+        print(f"[sqlite_columns] 查询列信息: {table}")
+        cur.execute(f"PRAGMA table_info('{table}')")
+        info = cur.fetchall()
+        conn.close()
+        cols = [{"name": r[1], "type": r[2], "notnull": r[3], "pk": r[5]} for r in info]
+        print(f"[sqlite_columns] 列数: {len(cols)}")
+        return json.dumps(cols, ensure_ascii=False)
+    except Exception as e:
+        print(f"[sqlite_columns] 失败: {str(e)}")
+        return f"读取列信息失败：{str(e)}"
+
+@tool
+def sqlite_distinct(db_path: str = "data/sqlite/california_schools.sqlite", table: str = "", column: str = "", limit: int = 50) -> str:
+    """
+    返回指定列的 DISTINCT 值（便于值域对齐与过滤条件构造）。
+    """
+    import sqlite3, json, os
+    print(f"[sqlite_distinct] 开始: db_path={db_path}, table={table}, column={column}, limit={limit}")
+    if not (table and column):
+        print("[sqlite_distinct] 未指定表或列")
+        return "未指定表或列"
+    resolved = _resolve_db_path(db_path)
+    if not os.path.isfile(resolved):
+        print(f"[sqlite_distinct] 文件不存在: {resolved}")
+        return f"文件不存在：{resolved}"
+    col = column.replace('"', '""')
+    try:
+        print("[sqlite_distinct] 连接数据库（只读）")
+        conn = sqlite3.connect(f"file:{resolved}?mode=ro", uri=True)
+        cur = conn.cursor()
+        print(f"[sqlite_distinct] 查询 DISTINCT 值: {table}.\"{col}\"")
+        cur.execute(f"SELECT DISTINCT \"{col}\" FROM '{table}' LIMIT {int(limit)}")
+        values = [r[0] for r in cur.fetchall()]
+        conn.close()
+        print(f"[sqlite_distinct] 返回值数量: {len(values)}")
+        return json.dumps({"values": values}, ensure_ascii=False)
+    except Exception as e:
+        print(f"[sqlite_distinct] 失败: {str(e)}")
+        return f"读取 DISTINCT 失败：{str(e)}"
+
 
 # ========== ReAct Agent ==========
 
@@ -219,7 +376,108 @@ class ReActAgent:
         # 不在初始化时创建 agent，而是在 run 时动态创建
         # 这样可以根据当前问题选择相关策略
         self._agent_cache = None
-    
+
+    def _auto_validate_and_correct_sql(self, sql: str, context: str = "") -> str:
+        """
+        轻量级自动校验与别名修正：
+        - 解析 FROM/JOIN 的表别名
+        - 调用 sqlite_columns 获取每表列名
+        - 检查 alias."col"/alias.`col` 是否存在于对应表（大小写与空格宽松匹配）
+        - 若不存在且其他表唯一命中该列，则替换到正确别名
+        - 验证修正后的 SQL（sqlite_query），成功则返回修正SQL，否则返回原始SQL
+        """
+        import re, json
+
+        def _get_tool(name: str):
+            for t in self.tools:
+                if getattr(t, "name", "") == name:
+                    return t
+            return None
+
+        def norm(s: str) -> str:
+            # 宽松归一化：小写 + 去除所有空白
+            return "".join((s or "").lower().split())
+
+        columns_tool = _get_tool("sqlite_columns")
+        query_tool = _get_tool("sqlite_query")
+        if not columns_tool or not query_tool:
+            return sql
+
+        text = sql
+
+        # 解析别名（支持 AS 与直接别名）
+        alias_map = {}
+        for pat in [
+            r"FROM\s+(\w+)\s+AS\s+(\w+)",
+            r"FROM\s+(\w+)\s+(\w+)",
+            r"JOIN\s+(\w+)\s+AS\s+(\w+)",
+            r"JOIN\s+(\w+)\s+(\w+)"
+        ]:
+            for m in re.finditer(pat, text, flags=re.IGNORECASE):
+                table, alias = m.group(1), m.group(2)
+                alias_map[alias] = table
+        if not alias_map:
+            # 兜底：假定三表别名与表同名
+            alias_map = {"T1": "frpm", "T2": "schools", "T3": "satscores"}
+
+        # 获取每表列集合（原名与归一化名）
+        table_cols = {}
+        for alias, table in alias_map.items():
+            try:
+                resp = columns_tool.invoke({"table": table})
+                cols = []
+                try:
+                    parsed = json.loads(resp)
+                    cols = [c["name"] for c in parsed if isinstance(c, dict) and "name" in c]
+                except Exception:
+                    cols = []
+                table_cols[alias] = {
+                    "raw": set(cols),
+                    "norm": set(norm(c) for c in cols)
+                }
+            except Exception:
+                table_cols[alias] = {"raw": set(), "norm": set()}
+
+        # 提取列引用：alias.`col` 或 alias."col"
+        refs = []
+        for m in re.finditer(r"(\w+)\.(?:`([^`]+)`|\"([^\"]+)\")", text):
+            alias = m.group(1)
+            col = m.group(2) if m.group(2) is not None else m.group(3)
+            quote = "`" if m.group(2) is not None else '"'
+            refs.append((m.group(0), alias, col, quote))
+
+        corrected = text
+        changed = False
+        for full, alias, col, quote in refs:
+            here = table_cols.get(alias, {"raw": set(), "norm": set()})
+            col_norm = norm(col)
+            # 当前别名对应表是否存在此列（宽松匹配）
+            if col in here["raw"] or col_norm in here["norm"]:
+                continue
+
+            # 查找其他别名中唯一命中该列
+            candidates = []
+            for a, cols in table_cols.items():
+                if (col in cols["raw"]) or (col_norm in cols["norm"]):
+                    candidates.append(a)
+
+            if len(candidates) == 1:
+                new_alias = candidates[0]
+                new_full = f"{new_alias}.{quote}{col}{quote}"
+                corrected = corrected.replace(full, new_full)
+                changed = True
+
+        # 验证修正后的 SQL
+        if changed:
+            resp = query_tool.invoke({"sql": corrected, "limit": 3})
+            # 简单判断是否为 JSON 成功返回
+            if isinstance(resp, str) and resp.strip().startswith("{"):
+                print("【自动校验】列别名已修正并通过验证")
+                return corrected
+            else:
+                print("【自动校验】修正后仍错误，保留原始SQL")
+        return sql
+
     def _get_or_create_agent(self, question: str = "", context: str = ""):
         """
         获取或创建 agent。
@@ -302,10 +560,28 @@ class ReActAgent:
                 print(f"上下文：{context}")
             print(f"{'='*60}\n")
 
-        # 调用 agent
-        result = agent.invoke({
-            "messages": [{"role": "user", "content": question}]
-        })
+        try:
+            result = agent.invoke(
+                {"messages": [{"role": "user", "content": question}]},
+                config={"recursion_limit": 40}
+            )
+        except Exception as e:
+            from langgraph.errors import GraphRecursionError
+            if isinstance(e, GraphRecursionError):
+                print(f"⚠️ LangGraph 递归上限触发，启用降级路径：{e}")
+                # 生成一个最小结果结构，避免流程中断
+                messages = []
+                final_message = ""
+                return ReactAgentResult(
+                    answer="",
+                    reasoning="递归上限触发，未生成答案",
+                    used_strategies=[],
+                    iterations=0,
+                    messages=messages,
+                    success=False
+                )
+            else:
+                raise
         messages = result["messages"]
         final_message = messages[-1].content if messages else ""
 
@@ -356,6 +632,23 @@ class ReActAgent:
             final_answer = final_message.split("Final Answer:")[-1].strip()
         else:
             final_answer = final_message
+
+        # 当答案不是 SQL（或未提供），从最近一次 sqlite_query 的工具调用中兜底提取 SQL
+        if not final_answer.strip().upper().startswith("SELECT"):
+            fallback_sql = self._extract_sql_from_tool_calls(messages)
+            if fallback_sql:
+                print("【从工具调用中提取SQL作为最终答案】")
+                final_answer = fallback_sql
+
+        # 自动校验与修正（仅当看起来是 SQL）
+        if final_answer.strip().upper().startswith("SELECT"):
+            try:
+                corrected = self._auto_validate_and_correct_sql(final_answer, context)
+                if corrected and corrected != final_answer:
+                    print("【自动校验并修正SQL】")
+                    final_answer = corrected
+            except Exception as e:
+                print(f"【自动校验失败】{e}")
 
         # 提取完整推理过程（所有 AI 消息的拼接）
         # 提取推理过程：遍历所有AI消息，构建编号的推理步骤
@@ -493,7 +786,28 @@ class ReActAgent:
     #             except Exception as e:
     #                 return f"工具执行错误: {str(e)}"
     #     return f"未找到工具: {tool_name}"
-    
+
+    def _extract_sql_from_tool_calls(self, messages: List) -> Optional[str]:
+        """
+        从工具调用中提取最近一次 sqlite_query 的 SQL 参数，用于兜底最终答案。
+        """
+        last_sql = None
+        for msg in messages:
+            calls = getattr(msg, "tool_calls", None)
+            if not calls:
+                continue
+            try:
+                for call in calls:
+                    # 结构示例：{'name': 'sqlite_query', 'args': {'sql': '...'}, 'id': '...', 'type': 'tool_call'}
+                    if isinstance(call, dict) and call.get("name") == "sqlite_query":
+                        args = call.get("args", {})
+                        sql = args.get("sql")
+                        if sql:
+                            last_sql = sql  # 取最近一次
+            except Exception:
+                continue
+        return last_sql
+
     def _get_system_prompt(self, question: str = "", context: str = "") -> str:
         """
         生成系统提示词。
@@ -510,8 +824,15 @@ class ReActAgent:
         context_str = f"\n## 额外上下文\n\n{context}" if context else ""
         # 3. 如果 context 中已包含 schema，提示模型直接使用
         schema_hint = ""
-        if "CREATE TABLE" in (context or ""):
-            schema_hint = "\n\n## 数据库查询说明\n上下文中已提供数据库 Schema，请直接生成 SQL，不要调用任何工具。"
+        if "create table" in (context or ""):
+            schema_hint = (
+                "\n\n## 数据库查询说明\n"
+                "上下文中已提供数据库 Schema。请生成 SQL 并进行快速验证：\n"
+                "- 使用 sqlite_columns 检查目标表的列名与类型（含空格/括号需加引号）\n"
+                "- 使用 sqlite_query 只读执行，若返回错误则修正 SQL 后再次验证\n"
+                "- 如需构造过滤条件，使用 sqlite_distinct 获取真实值域\n"
+                "验证无误后，再输出最终 SQL。"
+            )
         # 4. 组装最终系统提示（原模板 + SQL 规范）
         prompt = REACT_AGENT_PROMPT_V3.format(
             playbook=playbook_str,
@@ -584,7 +905,7 @@ class ReActAgent:
 
 def get_default_tools() -> List:
     """获取默认工具集。"""
-    return [calculator, search, sqlite_schema]
+    return [calculator, search, sqlite_schema,sqlite_query, sqlite_columns, sqlite_distinct]
 
 
 # ========== 演示代码 ==========

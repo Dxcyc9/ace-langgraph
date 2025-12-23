@@ -48,7 +48,7 @@ def load_train_questions(filepath: str) -> List[ReactQuestion]:
 def train_agent(
     training_file: str = "train_questions.json",
     playbook_path: str = "ace_react_playbook.json",
-    model_name: str = "moonshot-v1-8k",
+    model_name: str = "kimi-latest",
     max_iterations: int = 15,
     verbose: bool = False,
     show_progress: bool = True

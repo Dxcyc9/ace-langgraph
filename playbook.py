@@ -147,7 +147,8 @@ class Playbook:
         )
 
         self.embeddings = HuggingFaceEmbeddings(
-            model_name=r"G:\code\ace-langgraph\models\BAAI\bge-small-zh",  # 2. 本地绝对路径
+            # model_name=r"G:\code\ace-langgraph\models\BAAI\bge-small-zh",  # 2. 本地绝对路径
+            model_name="./models/BAAI/bge-small-zh",
             model_kwargs={"device": "cpu"},  # 3. 官方传参方式
             encode_kwargs={"normalize_embeddings": True}
         )

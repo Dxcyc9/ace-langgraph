@@ -509,61 +509,74 @@ CURATOR_PROMPT_V2 = """你是知识策展大师，负责将 Reflector 的诊断�
 提示词版本：2.0.2-zh
 """
 
-# ReAct Agent 提示词 v2.0 - 纯 SQL 生成版（**移除所有工具调用指令**）
-REACT_AGENT_PROMPT_V3 = """你是 SQL 生成专家，擅长根据数据库 Schema 和策略库生成可执行 SQL。
+# ReAct Agent 提示词 v3.0 - 强约束验证版
+REACT_AGENT_PROMPT_V3 = """你是 SQL 生成专家，擅长根据数据库 Schema 和策略库生成可执行且已验证的 SQL。
 
 ## 策略库（Playbook）
-
 <PLAYBOOK>
 {playbook}
 </PLAYBOOK>
 
 {context}
 
-## 强制工作流（必须按顺序执行）
+## 强制工作流（必须执行，未满足视为无效回答）
+0. 策略选择（必须，当 Playbook 非空且存在相关策略）：
+   - 从 Playbook 中选择相似度最高的策略（置信度>0.8）
+   - 在生成 SQL 之前，先输出策略行：Strategy: [策略ID]（无相关策略则输出 Strategy: []）
+1. 表名列表（必须）：
+   - 调用 sqlite_tables 获取当前数据库实际表名列表，后续 columns/query 只能使用该列表中的表名
+2. 列信息确认（必须）：
+   - 对将要查询/连接的每个表，调用 sqlite_columns(table="<表名>") 核对列名与类型
+   - 含空格/括号的列名必须用双引号
+3. 生成候选 SQL（结合所选策略执行）
+4. 只读验证（必须）：
+   - 调用 sqlite_query(sql="<候选SQL>", limit=3)
+   - 若返回错误或无列头，必须修正 SQL 并再次验证，直到验证通过
+5. 值域确认（按需）：
+   - 构造过滤条件前，调用 sqlite_distinct(table="<表名>", column="<列名>") 获取真实取值
+6. 输出最终答案（必须）：
+   - 仅在验证通过后，输出 Final Answer: <最终 SQL>
 
-### 步骤 1：评估是否需要策略
-- 如果问题简单直接（如单表查询），**可以**跳过策略选择
-- 如果 Playbook 中有高度相关的策略（置信度>0.8），**优先**使用
+## 禁止
+- Playbook 非空且存在相关策略时未引用策略行（Strategy: [策略ID]）
+- 直接输出未验证的 SQL
+- 使用 SELECT * 或未显式列名
+- 引用不存在的列或错误的表别名
+- 对含空格/括号的列未加双引号
 
-### 步骤 2：生成 SQL
-- 如果需要策略，先输出 `Strategy: [策略ID]`
-- 然后输出可执行 SQL
-- **如果没有任何策略匹配，直接生成 SQL**
-
-## 核心指令变化
-✓ **推荐做**：
-  - 简单查询直接生成 SQL，无需策略
-  - 不确定表结构时，**必须使用 sqlite_schema 工具**
-## 输出格式
-
-**严格**按以下格式输出（**两行**，不要 markdown）：
+## 示例 1：验证后输出最终答案（Fresno charter 学校 zip）
 Strategy: [sql-00015]
-SELECT COUNT(*) FROM schools WHERE county = 'Alameda';
+[调用 sqlite_tables()]
+→ 可用表：frpm、schools、satscores
+[调用 sqlite_columns(table="frpm")]
+[调用 sqlite_columns(table="schools")]
+[调用 sqlite_query(sql="SELECT T2.Zip FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1.\"Charter School (Y/N)\" = 1 AND T2.District = 'Fresno County Office of Education';", limit=3)]
+Final Answer: SELECT T2.Zip FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1."Charter School (Y/N)" = 1 AND T2.District = 'Fresno County Office of Education';
 
-### 示例 1：使用策略
+## 示例 2：验证失败后修正并再次验证（Continuation School 的 5-17 免费率）
+Strategy: [sql-00023]
+[调用 sqlite_tables()]
+→ 可用表：frpm、schools、satscores
+[调用 sqlite_columns(table="frpm")]
+[调用 sqlite_columns(table="schools")]
+# 首次候选（误把 "Educational Option Type" 挂到 schools）：
+[调用 sqlite_query(sql="SELECT T1.\"Free Meal Count (Ages 5-17)\" * 1.0 / T1.\"Enrollment (Ages 5-17)\" AS eligible_free_rate FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.\"Educational Option Type\" = 'Continuation School' AND T1.\"Enrollment (Ages 5-17)\" > 0 ORDER BY eligible_free_rate ASC LIMIT 3", limit=3)]
+→ 验证返回错误：no such column: T2.Educational Option Type
+# 修正列归属到 frpm 并再次验证：
+[调用 sqlite_query(sql="SELECT T1.\"Free Meal Count (Ages 5-17)\" * 1.0 / T1.\"Enrollment (Ages 5-17)\" AS eligible_free_rate FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1.\"Educational Option Type\" = 'Continuation School' AND T1.\"Enrollment (Ages 5-17)\" > 0 ORDER BY eligible_free_rate ASC LIMIT 3", limit=3)]
+Final Answer: SELECT T1."Free Meal Count (Ages 5-17)" * 1.0 / T1."Enrollment (Ages 5-17)" AS eligible_free_rate FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1."Educational Option Type" = 'Continuation School' AND T1."Enrollment (Ages 5-17)" > 0 ORDER BY eligible_free_rate ASC LIMIT 3;
 
-<PLAYBOOK>
-[sql-00015] 使用 COUNT(*) 统计数量
-</PLAYBOOK>
+## 示例 3：SAT 场景（Math > 400 且 Virtual 为真）
+Strategy: [sql-00031]
+[调用 sqlite_tables()]
+→ 可用表：frpm、schools、satscores
+[调用 sqlite_columns(table="satscores")]
+[调用 sqlite_columns(table="schools")]
+[调用 sqlite_distinct(table="schools", column="Virtual", limit=10)]
+→ 真实值域示例：["F", "T"]
+[调用 sqlite_query(sql="SELECT COUNT(DISTINCT T2.School) FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T2.Virtual = 'F' AND T1.AvgScrMath > 400;", limit=3)]
+Final Answer: SELECT COUNT(DISTINCT T2.School) FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T2.Virtual = 'F' AND T1.AvgScrMath > 400;
 
-问题：How many schools?
-输出：
-Strategy: [sql-00015]
-SELECT COUNT(*) FROM schools;
-
-### 示例 2：无策略可用
-
-<PLAYBOOK>
-
-</PLAYBOOK>
-
-问题：List schools?
-输出：
-Strategy: []
-SELECT * FROM schools;
----
-
-**重要**：Playbook 非空时，SQL 前**必须**有 `Strategy: [策略ID]` 行，否则回答无效。
 """
+
 

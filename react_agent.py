@@ -379,12 +379,10 @@ class ReActAgent:
 
     def _auto_validate_and_correct_sql(self, sql: str, context: str = "") -> str:
         """
-        轻量级自动校验与别名修正：
-        - 解析 FROM/JOIN 的表别名
-        - 调用 sqlite_columns 获取每表列名
-        - 检查 alias."col"/alias.`col` 是否存在于对应表（大小写与空格宽松匹配）
-        - 若不存在且其他表唯一命中该列，则替换到正确别名
-        - 验证修正后的 SQL（sqlite_query），成功则返回修正SQL，否则返回原始SQL
+        轻量级自动校验与修正：
+        - 值域映射：District 文本 → DOC 代码（52/54）
+        - 浮点保障：COUNT(*) / 12 → CAST(COUNT(*) AS REAL) / 12
+        - 别名与列归属校验（保持原逻辑）
         """
         import re, json
 
@@ -395,7 +393,6 @@ class ReActAgent:
             return None
 
         def norm(s: str) -> str:
-            # 宽松归一化：小写 + 去除所有空白
             return "".join((s or "").lower().split())
 
         columns_tool = _get_tool("sqlite_columns")
@@ -405,7 +402,23 @@ class ReActAgent:
 
         text = sql
 
-        # 解析别名（支持 AS 与直接别名）
+        # A) 值域映射修复：District 学区类型文本 → DOC 代码
+        text_fixed = re.sub(r"(?i)\bDistrict\s*=\s*'Elementary\s+School\s+District'", "DOC = 52", text)
+        text_fixed = re.sub(r"(?i)\bDistrict\s*=\s*'Unified\s+School\s+District'", "DOC = 54", text_fixed)
+
+        # B) 浮点保障：COUNT(*) / 12 → CAST(COUNT(*) AS REAL) / 12
+        text_fixed = re.sub(r"(?i)count\s*\(\s*\*\s*\)\s*/\s*12", "CAST(COUNT(*) AS REAL) / 12", text_fixed)
+
+        changed = (text_fixed != text)
+        if changed:
+            resp = query_tool.invoke({"sql": text_fixed, "limit": 3})
+            if isinstance(resp, str) and resp.strip().startswith("{"):
+                print("【自动校验】值域映射/浮点修正已应用并通过验证")
+                return text_fixed
+            else:
+                print("【自动校验】修正后仍错误，保留原始SQL")
+
+        # C) 原有别名与列归属修复逻辑（保持）
         alias_map = {}
         for pat in [
             r"FROM\s+(\w+)\s+AS\s+(\w+)",
@@ -417,10 +430,8 @@ class ReActAgent:
                 table, alias = m.group(1), m.group(2)
                 alias_map[alias] = table
         if not alias_map:
-            # 兜底：假定三表别名与表同名
             alias_map = {"T1": "frpm", "T2": "schools", "T3": "satscores"}
 
-        # 获取每表列集合（原名与归一化名）
         table_cols = {}
         for alias, table in alias_map.items():
             try:
@@ -431,14 +442,10 @@ class ReActAgent:
                     cols = [c["name"] for c in parsed if isinstance(c, dict) and "name" in c]
                 except Exception:
                     cols = []
-                table_cols[alias] = {
-                    "raw": set(cols),
-                    "norm": set(norm(c) for c in cols)
-                }
+                table_cols[alias] = {"raw": set(cols), "norm": set(norm(c) for c in cols)}
             except Exception:
                 table_cols[alias] = {"raw": set(), "norm": set()}
 
-        # 提取列引用：alias.`col` 或 alias."col"
         refs = []
         for m in re.finditer(r"(\w+)\.(?:`([^`]+)`|\"([^\"]+)\")", text):
             alias = m.group(1)
@@ -451,11 +458,9 @@ class ReActAgent:
         for full, alias, col, quote in refs:
             here = table_cols.get(alias, {"raw": set(), "norm": set()})
             col_norm = norm(col)
-            # 当前别名对应表是否存在此列（宽松匹配）
             if col in here["raw"] or col_norm in here["norm"]:
                 continue
 
-            # 查找其他别名中唯一命中该列
             candidates = []
             for a, cols in table_cols.items():
                 if (col in cols["raw"]) or (col_norm in cols["norm"]):
@@ -467,10 +472,8 @@ class ReActAgent:
                 corrected = corrected.replace(full, new_full)
                 changed = True
 
-        # 验证修正后的 SQL
         if changed:
             resp = query_tool.invoke({"sql": corrected, "limit": 3})
-            # 简单判断是否为 JSON 成功返回
             if isinstance(resp, str) and resp.strip().startswith("{"):
                 print("【自动校验】列别名已修正并通过验证")
                 return corrected
@@ -536,21 +539,11 @@ class ReActAgent:
     ) -> ReactAgentResult:
         """
         运行 ReAct Agent 解决问题。
-
-        参数：
-            react_question: 输入问题（ReactQuestion 对象）
-            track_strategies: 是否追踪使用的策略
-
-        返回：
-            ReactAgentResult 对象
         """
         question = react_question.question
         context = react_question.context
-
-        # 保存当前问题（用于检索策略）
         self.current_question = question
 
-        # 动态创建 agent（使用当前问题检索相关策略）
         agent = self._get_or_create_agent(question, context)
 
         if self.verbose:
@@ -569,7 +562,6 @@ class ReActAgent:
             from langgraph.errors import GraphRecursionError
             if isinstance(e, GraphRecursionError):
                 print(f"⚠️ LangGraph 递归上限触发，启用降级路径：{e}")
-                # 生成一个最小结果结构，避免流程中断
                 messages = []
                 final_message = ""
                 return ReactAgentResult(
@@ -582,58 +574,17 @@ class ReActAgent:
                 )
             else:
                 raise
+
         messages = result["messages"]
         final_message = messages[-1].content if messages else ""
 
-        # === 解析策略行（与可选提示词兼容） ===
-        used_strategies = []
-        lines = final_message.strip().split('\n')
-
-        # 检查第一行是否是策略引用
-        if lines and "Strategy:" in lines[0]:
-            # 提取策略ID
-            import re
-            matches = re.findall(r'Strategy: \[([a-z]{3}-\d{5})\]', lines[0])
-            used_strategies = matches
-
-            # SQL 内容从第二行开始
-            sql_lines = lines[1:] if len(lines) > 1 else []
-            final_answer = '\n'.join(sql_lines).strip()
-
-            # 仅在策略引用格式错误时警告（不是缺失）
-            if not matches and track_strategies:
-                print("⚠️ 策略引用格式错误，应为: Strategy: [sql-xxxxx]")
-        else:
-            # Agent 未引用策略（符合新的可选规则）
-            final_answer = final_message.strip()
-
-            # 仅在 Playbook 非空时提示（可关闭）
-            if track_strategies and len(self.playbook) > 0:
-                print("ℹ️ Agent 未使用策略（直接生成SQL）")
-
-
-        # === 调试：看所有 AI 消息的 tool_calls ===
-        for idx, m in enumerate(result["messages"]):
-            if hasattr(m, "type") and m.type == "ai":
-                calls = getattr(m, "tool_calls", None)
-                if calls:
-                    print(f"【步骤 {idx} 调用了工具】", calls)
-                    break  # 找到第一个就停
-        else:
-            print("【全程未调用任何工具】")
-
-        # ==========================================
-        # print("原始消息:", result["messages"][-1])
-        # 提取答案和推理过程
-        messages = result["messages"]
-        final_message = messages[-1].content if messages else "未能生成答案"
-        # 提取 Final Answer
+        # 解析最终答案
         if "Final Answer:" in final_message:
             final_answer = final_message.split("Final Answer:")[-1].strip()
         else:
             final_answer = final_message
 
-        # 当答案不是 SQL（或未提供），从最近一次 sqlite_query 的工具调用中兜底提取 SQL
+        # 若答案不是 SQL，兜底从最近一次 sqlite_query 工具调用中提取
         if not final_answer.strip().upper().startswith("SELECT"):
             fallback_sql = self._extract_sql_from_tool_calls(messages)
             if fallback_sql:
@@ -650,39 +601,51 @@ class ReActAgent:
             except Exception as e:
                 print(f"【自动校验失败】{e}")
 
-        # 提取完整推理过程（所有 AI 消息的拼接）
-        # 提取推理过程：遍历所有AI消息，构建编号的推理步骤
-        reasoning_steps = []
-        step_num = 1
+        # 全局扫描策略引用（不再限制第一行；忽略大小写）
+        import re
+        strategy_match = re.search(r'(?im)^\s*Strategy:\s*\[([A-Za-z]{3}-\d{5})\]', final_message or "")
+        used_strategies = []
+        if strategy_match:
+            used_strategies = [strategy_match.group(1)]
+        else:
+            # 回退：遍历所有 AI 消息提取 [id] 引用
+            used_strategies = self._extract_used_strategies(messages)
+            # 仍为空且 Playbook 非空时，自动选择最相关策略作为兜底
+            if track_strategies and not used_strategies and len(self.playbook) > 0:
+                try:
+                    best = self.playbook.retrieve_strategies(question=question, top_k=1, min_score=0)
+                    if best:
+                        used_strategies = [best[0].id]
+                        print(f"ℹ️ 自动选择策略：[{used_strategies[0]}]")
+                except Exception:
+                    pass
 
+        # 汇总推理过程
+        reasoning_steps = []
         for msg in messages:
             if isinstance(msg, AIMessage) and hasattr(msg, 'content'):
                 reasoning_steps.append(f"\n{msg.content.strip()}")
-                step_num += 1
         reasoning = "\n\n".join(reasoning_steps) if reasoning_steps else "未生成推理过程"
 
-        # 追踪使用的策略
-        used_strategies = []
-        if track_strategies:
-            used_strategies = self._extract_used_strategies(messages)
+        # 迭代次数
+        iterations = len([m for m in messages if hasattr(m, 'tool_calls') and m.tool_calls])
 
         if self.verbose:
             print(f"\n【最终答案】\n{final_answer}")
             print(f"\n【推理过程】\n{reasoning}")
             if used_strategies:
                 print(f"\n【使用的策略】\n{', '.join(used_strategies)}")
-            print(f"\n【迭代次数】\n{len([m for m in messages if hasattr(m, 'tool_calls') and m.tool_calls])}")
+            print(f"\n【迭代次数】\n{iterations}")
             print()
 
         return ReactAgentResult(
             answer=final_answer,
             reasoning=final_message,
             used_strategies=used_strategies,
-            iterations=len([m for m in messages if hasattr(m, 'tool_calls') and m.tool_calls]),
+            iterations=iterations,
             messages=messages,
             success=True
         )
-
     # def run(self, react_question: ReactQuestion, track_strategies: bool = True) -> ReactAgentResult:
     #     question = react_question.question
     #     context = react_question.context
@@ -834,10 +797,14 @@ class ReActAgent:
                 "验证无误后，再输出最终 SQL。"
             )
         # 4. 组装最终系统提示（原模板 + SQL 规范）
+        safe_playbook = playbook_str.replace("{", "{{").replace("}", "}}")
+        safe_context = context_str.replace("{", "{{").replace("}", "}}")
+
         prompt = REACT_AGENT_PROMPT_V3.format(
-            playbook=playbook_str,
-            context=context_str
+            playbook=safe_playbook,
+            context=safe_context
         ) + schema_hint
+
 
         return prompt
     

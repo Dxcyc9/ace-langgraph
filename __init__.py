@@ -11,7 +11,8 @@ ACE LangGraph Simple - 使用 LangGraph 的 Agentic Context Engineering 简化�
 """
 
 from .playbook import Playbook, Strategy
-from .evaluator import Evaluator, EvaluationResult
+from .evaluator import Evaluator
+from .agent_types import EvaluatorResult
 from .reflector import Reflector, ReflectionResult
 from .curator import Curator, CurationResult
 from .react_agent import ReActAgent, get_default_tools
@@ -22,7 +23,7 @@ __all__ = [
     "Playbook",
     "Strategy",
     "Evaluator",
-    "EvaluationResult",
+    "EvaluatorResult",
     "Reflector",
     "ReflectionResult",
     "Curator",
@@ -34,5 +35,3 @@ __all__ = [
     "ACEReActWorkflow",
     "ReactQuestion",
 ]
-
-

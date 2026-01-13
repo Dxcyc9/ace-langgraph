@@ -119,6 +119,8 @@ class DeltaOperation:
     category: Optional[str] = None
     strategy_id: Optional[str] = None
     justification: str = ""
+    applied: bool = False
+    skip_reason: Optional[str] = None
 
 @dataclass
 class CuratorResult:
@@ -129,20 +131,21 @@ class CuratorResult:
     updated_count: int = 0
     removed_count: int = 0
     marked_count: int = 0  # 标记的策略数量
-    
+
     def as_str(self) -> str:
         """格式化为字符串"""
         ops_summary = []
         for op in self.operations:
+            status = "已执行" if op.applied else f"已跳过：{op.skip_reason or '原因未知'}"
             if op.type == "ADD":
-                ops_summary.append(f"  + 新增：{op.content[:80]}...")
+                ops_summary.append(f"  + 新增：{op.content[:80]}...（{status}）")
             elif op.type == "UPDATE":
-                ops_summary.append(f"  ↻ 更新：[{op.strategy_id}] {op.content[:60]}...")
+                ops_summary.append(f"  ↻ 更新：[{op.strategy_id}] {op.content[:60]}...（{status}）")
             elif op.type == "REMOVE":
-                ops_summary.append(f"  - 移除：[{op.strategy_id}]")
-        
+                ops_summary.append(f"  - 移除：[{op.strategy_id}]（{status}）")
+
         ops_str = "\n".join(ops_summary) if ops_summary else "  （无操作）"
-        
+
         return f"""推理：{self.reasoning[:200]}{"..." if len(self.reasoning) > 200 else ""}
 
 统计：
@@ -152,4 +155,4 @@ class CuratorResult:
   标记策略：{self.marked_count} 个
 
 操作详情：
-{ops_str}"""    
+{ops_str}"""

@@ -12,6 +12,9 @@ from langchain_core.messages import HumanMessage
 import json
 import sys
 from pathlib import Path
+from prompts import REFLECTOR_PROMPT_V2
+from agent_types import ReactQuestion, ReactAgentResult, EvaluatorResult, ReflectionResult, StrategyTag, GeneralStrategy
+
 
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent
@@ -153,7 +156,19 @@ class Reflector:
                 )
                 for tag in strategies_to_mark
             ]
-            
+
+            # 解析通用策略
+            gs_items = []
+            for gs in data.get("general_strategies", []) or []:
+                content = (gs.get("content") or "").strip()
+                category = (gs.get("category") or "sql_rules").strip()
+                try:
+                    confidence = float(gs.get("confidence", 0.9))
+                except Exception:
+                    confidence = 0.9
+                if content:
+                    gs_items.append(GeneralStrategy(content=content, category=category, confidence=confidence))
+
             return ReflectionResult(
                 reasoning=data.get("reasoning", ""),
                 error_identification=data.get("error_identification", "none"),
@@ -162,7 +177,8 @@ class Reflector:
                 correct_approach=data.get("correct_approach", ""),
                 key_insight=data.get("key_insight", ""),
                 confidence_in_analysis=float(data.get("confidence_in_analysis", 0.8)),
-                strategy_tags=strategy_tag_objects
+                strategy_tags=strategy_tag_objects,
+                general_strategies=gs_items
             )
             
         except (json.JSONDecodeError, KeyError, ValueError) as e:

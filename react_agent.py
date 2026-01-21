@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 load_dotenv()  # 加载 .env 文件
 
 # 添加项目根目录到 Python 路径
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
@@ -66,6 +66,10 @@ def _resolve_db_path(db_path: str) -> str:
     if env_path and os.path.isfile(env_path):
         print(f"[db_resolve] 使用环境变量 SQLITE_DB_PATH: {env_path}")
         return env_path
+        # 3.5) 当前工作目录下的相对路径
+    if os.path.isfile(raw):
+        print(f"[db_resolve] 使用相对路径: {raw}")
+        return raw
     # 4) 最终回退到项目默认
     fallback = os.path.join(str(project_root), "data/sqlite/california_schools.sqlite")
     if os.path.isfile(fallback):
@@ -601,24 +605,24 @@ class ReActAgent:
             except Exception as e:
                 print(f"【自动校验失败】{e}")
 
-        # 全局扫描策略引用（不再限制第一行；忽略大小写）
         import re
-        strategy_match = re.search(r'(?im)^\s*Strategy:\s*\[([A-Za-z]{3}-\d{5})\]', final_message or "")
         used_strategies = []
-        if strategy_match:
-            used_strategies = [strategy_match.group(1)]
-        else:
-            # 回退：遍历所有 AI 消息提取 [id] 引用
+        if "Strategy:" in (final_message or ""):
+            line = re.search(r'(?im)^\s*Strategy:\s*(.+)$', final_message or "")
+            if line:
+                used_strategies = re.findall(r'\[([A-Za-z]{3}-\d{5})\]', line.group(1))
+        if not used_strategies:
             used_strategies = self._extract_used_strategies(messages)
-            # 仍为空且 Playbook 非空时，自动选择最相关策略作为兜底
-            if track_strategies and not used_strategies and len(self.playbook) > 0:
-                try:
-                    best = self.playbook.retrieve_strategies(question=question, top_k=1, min_score=0)
-                    if best:
-                        used_strategies = [best[0].id]
-                        print(f"ℹ️ 自动选择策略：[{used_strategies[0]}]")
-                except Exception:
-                    pass
+        if track_strategies and not used_strategies and len(self.playbook) > 0:
+            try:
+                best = self.playbook.retrieve_strategies(question=question, top_k=1, min_score=0)
+                if best:
+                    used_strategies = [best[0].id]
+                    print(f"ℹ️ 自动选择策略：[{used_strategies[0]}]")
+            except Exception:
+                pass
+        # 去重保序
+        used_strategies = list(dict.fromkeys(used_strategies))
 
         # 汇总推理过程
         reasoning_steps = []

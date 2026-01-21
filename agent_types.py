@@ -71,6 +71,14 @@ class StrategyTag:
 
 
 @dataclass
+class GeneralStrategy:
+    """反思阶段总结的通用策略（待写入 Playbook）"""
+    content: str
+    category: str
+    confidence: float = 0.9
+
+
+@dataclass
 class ReflectionResult:
     """Reflector 的反思结果"""
     reasoning: str
@@ -81,14 +89,19 @@ class ReflectionResult:
     key_insight: str
     confidence_in_analysis: float
     strategy_tags: List[StrategyTag]
-    
+    general_strategies: List[GeneralStrategy] = field(default_factory=list)
+
     def as_str(self) -> str:
         """格式化为字符串，供 Curator 提示词使用"""
         tags_str = "\n".join([
             f"  - [{tag.id}] {tag.tag}: {tag.justification}"
             for tag in self.strategy_tags
         ])
-        
+        gs_str = "\n".join([
+            f"  - ({gs.category}, conf:{gs.confidence:.2f}) {gs.content}"
+            for gs in self.general_strategies
+        ])
+
         return f"""
 ## 系统化分析
 {self.reasoning}
@@ -109,6 +122,9 @@ class ReflectionResult:
 
 ## 策略标记
 {tags_str if tags_str else "（无策略标记）"}
+
+## 通用策略
+{gs_str if gs_str else "（无通用策略）"}
 """.strip()
 
 @dataclass

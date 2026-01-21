@@ -230,6 +230,13 @@ REFLECTOR_PROMPT_V2 = """你是 Text-to-SQL 诊断分析专家与反思者。
       "justification": "<此标记的具体证据>"
     }}
   ]
+  "general_strategies": [
+    {{
+      "content": "<英文短句，可泛化、可直接执行>",
+      "category": "sql_rules|join_norms|value_domain|quoting|aggregation|validation_flow|scenario_mapping",
+      "confidence": 0.90
+    }}
+  ]
 }}
 
 # 以 `{{` 开始，以 `}}` 结束响应
@@ -269,6 +276,7 @@ CURATOR_PROMPT_V2 = """你是知识策展大师，负责把 Reflector 的诊断�
 2. 缺失能力（明确场景映射缺口）→ ADD scenario_mapping 策略（给出文本触发、表/列、JOIN、过滤骨架）
 3. 策略改进（补边缘情况）→ UPDATE 原策略（以“补充：”追加）
 4. 冗余/矛盾 → REMOVE
+5. 反思提供的 general_strategies → 优先 ADD 到 Playbook（按分类归档）
 
 ## 写法规范（content 必须可直接执行）
 - 面向场景：一句话描述触发文本模式与对应表/列/JOIN/过滤骨架

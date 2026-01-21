@@ -32,7 +32,7 @@ class Curator:
         playbook: Playbook,
         model_name: str = "gpt-4o-mini",
         temperature: float = 0.7,
-        max_strategies_per_reflection: int = 5
+        max_strategies_per_reflection: int = 2
     ):
         self.playbook = playbook
         self.llm = ChatOpenAI(model=model_name, temperature=temperature, base_url="https://api.moonshot.cn/v1")
@@ -104,6 +104,7 @@ class Curator:
                 if not text:
                     return ""
                 return self._normalize_terms_to_english(text)
+
             operations = [
                 {
                     **op,
@@ -113,8 +114,51 @@ class Curator:
                 for op in operations
             ]
 
+            # 增长控制：限制每轮新增数量并去重（超预算的 ADD 转为 UPDATE 合并到最相似策略）
+            max_add = max(1, min(self.max_strategies, 2))
+            add_count = 0
+            seen_add_contents = set()
+            filtered_ops = []
+            for op in operations:
+                if op.get("type") == "ADD":
+                    content_norm = (op.get("content", "").strip().lower())
+                    if not content_norm:
+                        continue
+                    if content_norm in seen_add_contents:
+                        # 跳过完全重复的新增
+                        continue
+                    if add_count < max_add:
+                        filtered_ops.append(op)
+                        seen_add_contents.add(content_norm)
+                        add_count += 1
+                    else:
+                        # 超预算：转为 UPDATE 合并到最相似策略
+                        similar_id = self._find_most_similar_strategy_id(op.get("content", ""))
+                        if similar_id:
+                            op["type"] = "UPDATE"
+                            op["strategy_id"] = similar_id
+                            op["justification"] = (
+                                        op.get("justification", "") + "（超过新增预算→更新最相似策略）").strip()
+                            filtered_ops.append(op)
+                        # 若找不到相似策略，直接跳过该操作
+                else:
+                    filtered_ops.append(op)
+
             # 错误案例强制增量修正（保持原逻辑）
-            enforced_ops = list(operations)
+            enforced_ops = list(filtered_ops)
+
+            # 来自反思的一般策略，直接作为 ADD 预置（避免丢失）
+            try:
+                for gs in getattr(reflection_result, "general_strategies", []) or []:
+                    enforced_ops.insert(0, {
+                        "type": "ADD",
+                        "category": gs.category or "general",
+                        "content": gs.content,
+                        "justification": "来自反思 general_strategies"
+                    })
+            except Exception:
+                pass
+
             need_enforce = evaluator_result and (not evaluator_result.is_correct)
             if need_enforce:
                 existing_update_ids = {op.get("strategy_id") for op in enforced_ops if op.get("type") == "UPDATE"}
@@ -157,16 +201,19 @@ class Curator:
                         added_count += 1
                         applied = True
                     else:
+                        skip_reason = "与现有策略相似度过高"
+                        applied = False
                         similar_id = self._find_most_similar_strategy_id(strategy_text)
                         if similar_id:
                             success = self.playbook.update_strategy_content(similar_id, strategy_text)
                             if success:
-                                print(f"✅ 重复新增转为更新: {similar_id}")
+                                print(f"✅ 已更新策略: {similar_id}（重复新增→更新）")
                                 updated_count += 1
                                 applied = True
                                 op["type"] = "UPDATE"
                                 op["strategy_id"] = similar_id
                                 op["justification"] = (op.get("justification", "") + "（重复→更新最相似策略）").strip()
+
                             else:
                                 skip_reason = "not_found"
                         else:
@@ -248,6 +295,8 @@ class Curator:
     def _is_duplicate(self, new_strategy: str, playbook: Playbook, threshold: float = 0.90) -> bool:
         if len(playbook) == 0:
             return False
+        size = len(playbook)
+        threshold = 0.90 if size < 50 else (0.85 if size < 100 else 0.80)
         if playbook.enable_retrieval:
             try:
                 new_embedding = playbook.embeddings.embed_query(new_strategy)

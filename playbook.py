@@ -164,7 +164,7 @@ class Playbook:
             id=strategy_id,
             content=sanitized,
             category=category,
-            helpful_count=1
+            helpful_count=0
         )
 
         self._strategies[strategy_id] = strategy

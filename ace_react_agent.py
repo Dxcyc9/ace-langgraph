@@ -338,8 +338,8 @@ class ACEReActWorkflow:
         # 直接使用 state 中的类型对象
         react_question = state["react_question"]
         react_result = state["react_result"]
-        print(f"   评估问题: {react_question.ground_truth}")
-        print(f"   评估结果: {react_result.answer}")
+        print(f"   标准答案: {react_question.ground_truth}")
+        print(f"   问题回答: {react_result.answer}")
         
         # 调用新接口
         evaluation = self.evaluator.evaluate(react_question, react_result)
@@ -582,7 +582,7 @@ def main():
         use_vector_retrieval=True
     )
 
-    # 2. 训练问题
+    # 2. 训练问题（train）
     questions = [
         ReactQuestion(
             question="What is the highest eligible free rate for K-12 students in the schools in Alameda County?",
@@ -841,35 +841,234 @@ def main():
         )
     ]
 
+
     # questions = [
     #     ReactQuestion(
-    #         question="What is the highest eligible free rate for K-12 students in the schools in Alameda County?",
-    #         ground_truth="SELECT `Free Meal Count (K-12)` / `Enrollment (K-12)` FROM frpm WHERE `County Name` = 'Alameda' ORDER BY (CAST(`Free Meal Count (K-12)` AS REAL) / `Enrollment (K-12)`) DESC LIMIT 1",
-    #         context=''
+    #         question="In which mailing street address can you find the school that has the lowest average score in reading? Also give the school's name.",
+    #         ground_truth="SELECT T2.MailStreet, T2.School FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T1.AvgScrRead IS NOT NULL ORDER BY T1.AvgScrRead ASC LIMIT 1",
+    #         context=SCHEMA_CONTEXT
     #     ),
     #     ReactQuestion(
-    #         question="Please list the lowest three eligible free rates for students aged 5-17 in continuation schools.",
-    #         ground_truth="SELECT `Free Meal Count (Ages 5-17)` / `Enrollment (Ages 5-17)` FROM frpm WHERE `Educational Option Type` = 'Continuation School' AND `Free Meal Count (Ages 5-17)` / `Enrollment (Ages 5-17)` IS NOT NULL ORDER BY `Free Meal Count (Ages 5-17)` / `Enrollment (Ages 5-17)` ASC LIMIT 3",
-    #         context=''
+    #         question="What is the total number of schools whose total SAT scores are greater or equal to 1500 whose mailing city is Lakeport?",
+    #         ground_truth="SELECT COUNT(T1.cds) FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T2.MailCity = 'Lakeport' AND (T1.AvgScrRead + T1.AvgScrMath + T1.AvgScrWrite) >= 1500",
+    #         context=SCHEMA_CONTEXT
     #     ),
     #     ReactQuestion(
-    #         question="Please list the zip code of all the charter schools in Fresno County Office of Education.",
-    #         ground_truth="SELECT T2.Zip FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1.`District Name` = 'Fresno County Office of Education' AND T1.`Charter School (Y/N)` = 1",
-    #         context=''
+    #         question="How many test takers are there at the school/s whose mailing city address is in Fresno?",
+    #         ground_truth="SELECT T1.NumTstTakr FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode WHERE T2.MailCity = 'Fresno'",
+    #         context=SCHEMA_CONTEXT
     #     ),
     #     ReactQuestion(
-    #         question="What is the unabbreviated mailing street address of the school with the highest FRPM count for K-12 students?",
-    #         ground_truth="SELECT T2.MailStreet FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode ORDER BY T1.`FRPM Count (K-12)` DESC LIMIT 1",
-    #         context=''
+    #         question="Please specify all of the schools and their related mailing zip codes that are under Avetik Atoian's administration.",
+    #         ground_truth="SELECT School, MailZip FROM schools WHERE AdmFName1 = 'Avetik' AND AdmLName1 = 'Atoian'",
+    #         context=SCHEMA_CONTEXT
     #     ),
     #     ReactQuestion(
-    #         question="Please list the phone numbers of the direct charter-funded schools that are opened after 2000/1/1.",
-    #         ground_truth="SELECT T2.Phone FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1.`Charter Funding Type` = 'Directly funded' AND T1.`Charter School (Y/N)` = 1 AND T2.OpenDate > '2000-01-01'",
-    #         context=''
+    #         question="Of the schools with a mailing state address in California, what is the ratio of the schools located in the county of Colusa against the school located in the county of Humboldt?",
+    #         ground_truth="SELECT CAST(SUM(CASE WHEN County = 'Colusa' THEN 1 ELSE 0 END) AS REAL) / SUM(CASE WHEN County = 'Humboldt' THEN 1 ELSE 0 END) FROM schools WHERE MailState = 'CA'",
+    #         context=SCHEMA_CONTEXT
     #     ),
+    #
+    #     ReactQuestion(
+    #         question="Of all the schools with a mailing state address in California, how many are active in San Joaquin city?",
+    #         ground_truth="SELECT COUNT(CDSCode) FROM schools WHERE City = 'San Joaquin' AND MailState = 'CA' AND StatusType = 'Active'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the phone number and extension number for the school that had the 333rd highest average writing score?",
+    #         ground_truth="SELECT T2.Phone, T2.Ext FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode ORDER BY T1.AvgScrWrite DESC LIMIT 332, 1",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the phone number and extension number for the school with the zip code 95203-3704? Indicate the school's name.",
+    #         ground_truth="SELECT Phone, Ext, School FROM schools WHERE Zip = '95203-3704'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the website for the schools under the administrations of Mike Larson and Dante Alvarez?",
+    #         ground_truth="SELECT Website FROM schools WHERE (AdmFName1 = 'Mike' AND AdmLName1 = 'Larson') OR (AdmFName1 = 'Dante' AND AdmLName1 = 'Alvarez')",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What are the websites for all the partially virtual chartered schools located in San Joaquin?",
+    #         ground_truth="SELECT Website FROM schools WHERE County = 'San Joaquin' AND Virtual = 'P' AND Charter = 1",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="How many chartered schools located in the city of Hickman are owned by the Elementary School District?",
+    #         ground_truth="SELECT COUNT(School) FROM schools WHERE DOC = 52 AND Charter = 1 AND City = 'Hickman'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the total number of non-chartered schools in the county of Los Angeles with a percent (%) of eligible free meals for grades 1 through 12 that is less than 0.18%?",
+    #         ground_truth="SELECT COUNT(T2.School) FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.County = 'Los Angeles' AND T2.Charter = 0 AND CAST(T1.`Free Meal Count (K-12)` AS REAL) * 100 / T1.`Enrollment (K-12)` < 0.18",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="In chartered schools with charter number 00D2, what are the names of all the administrators? Include the name of the school and the city to which it belongs",
+    #         ground_truth="SELECT AdmFName1, AdmLName1, School, City FROM schools WHERE Charter = 1 AND CharterNum = '00D2'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the total number of schools with a mailing city in Hickman belonging to the charter number 00D4?",
+    #         ground_truth="SELECT COUNT(*) FROM schools WHERE CharterNum = '00D4' AND MailCity = 'Hickman'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the ratio in percentage of Santa Clara County schools that are locally funded compared to all other types of charter school funding?",
+    #         ground_truth="SELECT CAST(SUM(CASE WHEN FundingType = 'Locally funded' THEN 1 ELSE 0 END) AS REAL) * 100 / SUM(CASE WHEN FundingType != 'Locally funded' THEN 1 ELSE 0 END) FROM schools WHERE County = 'Santa Clara' AND Charter = 1",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="Between 1/1/2000 to 12/31/2005, how many directly funded schools opened in the county of Stanislaus?",
+    #         ground_truth="SELECT COUNT(School) FROM schools WHERE strftime('%Y', OpenDate) BETWEEN '2000' AND '2005' AND County = 'Stanislaus' AND FundingType = 'Directly funded'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the total amount of Community College District closure in 1989 in the city of San Francisco?",
+    #         ground_truth="SELECT COUNT(School) FROM schools WHERE strftime('%Y', ClosedDate) = '1989' AND City = 'San Francisco' AND DOCType = 'Community College District'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="Which county reported the most number of school closure in the 1980s with school wonership code belonging to Youth Authority Facilities (CEA)?",
+    #         ground_truth="SELECT County FROM schools WHERE strftime('%Y', ClosedDate) BETWEEN '1980' AND '1989' AND StatusType = 'Closed' AND SOC = 11 GROUP BY County ORDER BY COUNT(School) DESC LIMIT 1",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="Please provide the National Center for Educational Statistics school district identification number for all schools with a School Ownership Code that are part of the State Special Schools.",
+    #         ground_truth="SELECT NCESDist FROM schools WHERE SOC = 31",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="How many active and closed District Community Day Schools are there in the county of Alpine?",
+    #         ground_truth="SELECT COUNT(School) FROM schools WHERE (StatusType = 'Closed' OR StatusType = 'Active') AND SOC = 69 AND County = 'Alpine'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the district code for the School that does not offer a magnet program in the city of Fresno?",
+    #         ground_truth="SELECT T1.`District Code` FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.City = 'Fresno' AND T2.Magnet = 0",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="How many students from the ages of 5 to 17 are enrolled at the State Special School school in Fremont for the 2014-2015 academic year?",
+    #         ground_truth="SELECT T1.`Enrollment (Ages 5-17)` FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.EdOpsCode = 'SSS' AND T2.City = 'Fremont' AND T1.`Academic Year` BETWEEN 2014 AND 2015",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the free or reduced price meal count for ages 5 to 17 in the Youth Authority School with a mailing street address of PO Box 1040?",
+    #         ground_truth="SELECT T1.`FRPM Count (Ages 5-17)` FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.MailStreet = 'PO Box 1040' AND T2.SOCType = 'Youth Authority Facilities'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the lowest grade for the District Special Education Consortia School with National Center for Educational Statistics school district identification number of 0613360?",
+    #         ground_truth="SELECT MIN(T1.`Low Grade`) FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.NCESDist = '0613360' AND T2.EdOpsCode = 'SPECON'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the educational level name for the schools with Breakfast Provision 2 in county code 37? Indicate the name of the school.",
+    #         ground_truth="SELECT T2.EILName, T2.School FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1.`NSLP Provision Status` = 'Breakfast Provision 2' AND T1.`County Code` = 37",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the city location of the high school level school with Lunch Provision 2 whose lowest grade is 9 and the highest grade is 12 in the county of Merced?",
+    #         ground_truth="SELECT T2.City FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T1.`NSLP Provision Status` = 'Lunch Provision 2' AND T2.County = 'Merced' AND T1.`Low Grade` = 9 AND T1.`High Grade` = 12 AND T2.EILCode = 'HS'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="Which schools served a grade span of Kindergarten to 9th grade in the county of Los Angeles and what is its Percent (%) Eligible FRPM (Ages 5-17)?",
+    #         ground_truth="SELECT T2.School, T1.`FRPM Count (Ages 5-17)` * 100 / T1.`Enrollment (Ages 5-17)` FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.County = 'Los Angeles' AND T2.GSserved = 'K-9'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the most common type of grade span served in the city of Adelanto?",
+    #         ground_truth="SELECT GSserved FROM schools WHERE City = 'Adelanto' GROUP BY GSserved ORDER BY COUNT(GSserved) DESC LIMIT 1",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="Between San Diego and Santa Barbara, which county offers the most number of schools that does not offer physical building? Indicate the amount.",
+    #         ground_truth="SELECT County, COUNT(Virtual) FROM schools WHERE (County = 'San Diego' OR County = 'Santa Barbara') AND Virtual = 'F' GROUP BY County ORDER BY COUNT(Virtual) DESC LIMIT 1",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the school type of the school with the highest latitude? Indicate the name of the school as well as the latitude coordinates.",
+    #         ground_truth="SELECT T1.`School Type`, T1.`School Name`, T2.Latitude FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode ORDER BY T2.Latitude DESC LIMIT 1",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="In which city can you find the school in the state of California with the lowest latitude coordinates and what is its lowest grade? Indicate the school name.",
+    #         ground_truth="SELECT T2.City, T1.`Low Grade`, T1.`School Name` FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.State = 'CA' ORDER BY T2.Latitude ASC LIMIT 1",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the grade span offered in the school with the highest longitude?",
+    #         ground_truth="SELECT GSoffered FROM schools ORDER BY ABS(longitude) DESC LIMIT 1",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="Of the schools that offers a magnet program serving a grade span of Kindergarten to 8th grade, how many offers Multiple Provision Types? List the number of cities that offers a Kindergarten to 8th grade span and indicate how many schools are there serving such grade span for each city.",
+    #         ground_truth="SELECT T2.City, COUNT(T2.CDSCode) FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.Magnet = 1 AND T2.GSoffered = 'K-8' AND T1.`NSLP Provision Status` = 'Multiple Provision Types' GROUP BY T2.City",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What are the two most common first names among the school administrators? Indicate the district to which they administer.",
+    #         ground_truth="SELECT DISTINCT T1.AdmFName1, T1.District FROM schools AS T1 INNER JOIN ( SELECT admfname1 FROM schools GROUP BY admfname1 ORDER BY COUNT(admfname1) DESC LIMIT 2 ) AS T2 ON T1.AdmFName1 = T2.admfname1",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the Percent (%) Eligible Free (K-12) in the school administered by an administrator whose first name is Alusine. List the district code of the school.",
+    #         ground_truth="SELECT T1.`Free Meal Count (K-12)` * 100 / T1.`Enrollment (K-12)`, T1.`District Code` FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.AdmFName1 = 'Alusine'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the administrator's last name that oversees the school with Charter number 40? Indicate the district, the county where the school is situated, and the name of the school.",
+    #         ground_truth="SELECT AdmLName1, District, County, School FROM schools WHERE CharterNum = '0040'",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What are the valid e-mail addresses of the administrator of the school located in the San Bernardino county, City of San Bernardino City Unified that opened between 1/1/2009 to 12/31/2010 whose school types are public Intermediate/Middle Schools and Unified Schools?",
+    #         ground_truth="SELECT T2.AdmEmail1, T2.AdmEmail2 FROM frpm AS T1 INNER JOIN schools AS T2 ON T1.CDSCode = T2.CDSCode WHERE T2.County = 'San Bernardino' AND T2.City = 'San Bernardino' AND T2.DOC = 54 AND strftime('%Y', T2.OpenDate) BETWEEN '2009' AND '2010' AND T2.SOC = 62",
+    #         context=SCHEMA_CONTEXT
+    #     ),
+    #
+    #     ReactQuestion(
+    #         question="What is the administrator's email address for the school with the highest number of test takers who received SAT scores of at least 1500?Provide the name of the school.",
+    #         ground_truth="SELECT T2.AdmEmail1, T2.School FROM satscores AS T1 INNER JOIN schools AS T2 ON T1.cds = T2.CDSCode ORDER BY T1.NumGE1500 DESC LIMIT 1",
+    #         context=SCHEMA_CONTEXT
+    #     )
+    #
     # ]
 
-    # 3. 运行训练
     print("\n开始训练阶段...\n")
 
     for i, question in enumerate(questions, 1):

@@ -37,6 +37,7 @@ from typing_extensions import TypedDict
 
 # ========== 数据库 Schema 常量（用于训练阶段）==========
 SCHEMA_CONTEXT = """
+
 ## 数据库 Schema (California Schools)
 以下四张表已加载，可直接使用：
 
